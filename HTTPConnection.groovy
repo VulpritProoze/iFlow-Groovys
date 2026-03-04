@@ -63,7 +63,7 @@ class SessionBasedConnection {
 
         if (connection instanceof HttpsURLConnection) {
             disableSSL()
-        // throw new IllegalStateException("HTTP connections only.")
+            // throw new IllegalStateException("HTTP connections only.")
         }
 
         return connection
@@ -76,11 +76,10 @@ class SessionBasedConnection {
             con.setRequestProperty(prop.key, prop.value)
         }
 
-        if (!sessionId && !sessionVar) {
-            throw new RuntimeException('Missing sessionId and sessionVar for Connection')
-        }
-
         if (request.isPassSession) {
+            if (!sessionId && !sessionVar) {
+                throw new RuntimeException('Missing sessionId and sessionVar for Connection')
+            }
             con.setRequestProperty('Cookie', sessionVar + '=' + sessionId)
         }
 
@@ -93,7 +92,34 @@ class SessionBasedConnection {
         return response
     }
 
-    // Function to log in to the SAP Service Layer
+    public Object post(RequestBody request) {
+        def con = connect(request.url)
+        con.setRequestMethod('POST')
+        for (prop in request.requestProperty) {
+            con.setRequestProperty(prop.key, prop.value)
+        }
+
+        if (!sessionId && !sessionVar) {
+            throw new RuntimeException('Missing sessionId and sessionVar for Connection')
+        }
+
+        if (request.isPassSession) {
+            if (!sessionId && !sessionVar) {
+                throw new RuntimeException('Missing sessionId and sessionVar for Connection')
+            }
+            con.setRequestProperty('Cookie', sessionVar + '=' + sessionId)
+        }
+
+        if (request.payload) {
+            con.setDoOutput(true)
+            con.outputStream.withCloseable { it << JsonOutput.toJson(request.payload) }
+        }
+
+        def response = new JsonSlurper().parse(con.inputStream.newReader())
+        return response
+    }
+
+    // Function to log in to the SAP B1 Service Layer
     public Object login(Map<String, String> payload) {
         try {
             def url = '/Login'

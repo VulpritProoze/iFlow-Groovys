@@ -1,4 +1,2 @@
-### iFlow-Groovys
-<br />
-Custom SAP BTP Integration Suite iFlow scripts to make life easier (for pro-code folks).
-
+# iFlow Groovy Scripts
+My repository of various SAP BTP CPI groovyscripts
