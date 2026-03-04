@@ -72,9 +72,86 @@ class SessionBasedConnection {
     public Object get(RequestBody request) {
         def con = connect(request.url)
         con.setRequestMethod('GET')
+        con.doOutput = true
         for (prop in request.requestProperty) {
             con.setRequestProperty(prop.key, prop.value)
         }
+
+        if (request.isPassSession) {
+            if (!sessionId && !sessionVar) {
+                throw new RuntimeException('Missing sessionId and sessionVar for Connection')
+            }
+            con.setRequestProperty('Cookie', sessionVar + '=' + sessionId)
+        }
+
+        if (request.payload) {
+            con.outputStream.withCloseable { it << JsonOutput.toJson(request.payload) }
+        }
+
+        if (con.responseCode >= 200 && con.responseCode < 300) {
+            return new JsonSlurper().parse(con.inputStream.newReader())
+        } else {
+            def errorText = con.errorStream?.text ?: "No error details provided"
+            throw new RuntimeException("POST failed. HTTP ${con.responseCode}: $errorText")
+        }
+    }
+
+    public Object put(RequestBody request) {
+        def con = connect(request.url)
+        con.setRequestMethod('PUT')
+        con.doOutput = true
+        for (prop in request.requestProperty) {
+            con.setRequestProperty(prop.key, prop.value)
+        }
+
+        if (request.isPassSession) {
+            if (!sessionId && !sessionVar) {
+                throw new RuntimeException('Missing sessionId and sessionVar for Connection')
+            }
+            con.setRequestProperty('Cookie', sessionVar + '=' + sessionId)
+        }
+
+        if (request.payload) {
+            con.outputStream.withCloseable { it << JsonOutput.toJson(request.payload) }
+        }
+
+        if (con.responseCode >= 200 && con.responseCode < 300) {
+            return new JsonSlurper().parse(con.inputStream.newReader())
+        } else {
+            def errorText = con.errorStream?.text ?: "No error details provided"
+            throw new RuntimeException("PUT failed. HTTP ${con.responseCode}: $errorText")
+        }
+    }
+
+    public Object delete(RequestBody request) {
+        def con = connect(request.url)
+        con.setRequestMethod('DELETE')
+        for (prop in request.requestProperty) {
+            con.setRequestProperty(prop.key, prop.value)
+        }
+
+        if (request.isPassSession) {
+            if (!sessionId && !sessionVar) {
+                throw new RuntimeException('Missing sessionId and sessionVar for Connection')
+            }
+            con.setRequestProperty('Cookie', sessionVar + '=' + sessionId)
+        }
+
+        // DELETE can have a payload, though it is not standard
+        if (request.payload) {
+            con.doOutput = true
+            con.outputStream.withCloseable { it << JsonOutput.toJson(request.payload) }
+        }
+
+        if (con.responseCode >= 200 && con.responseCode < 300) {
+            // Some DELETE responses are 204 No Content
+            if (con.responseCode == 204) return [status: 'Success']
+            return new JsonSlurper().parse(con.inputStream.newReader())
+        } else {
+            def errorText = con.errorStream?.text ?: "No error details provided"
+            throw new RuntimeException("DELETE failed. HTTP ${con.responseCode}: $errorText")
+        }
+    }
 
         if (request.isPassSession) {
             if (!sessionId && !sessionVar) {
@@ -88,19 +165,21 @@ class SessionBasedConnection {
             con.outputStream.withCloseable { it << JsonOutput.toJson(request.payload) }
         }
 
-        def response = new JsonSlurper().parse(con.inputStream.newReader())
-        return response
+        int responseCode = con.responseCode
+        if (responseCode >= 200 && responseCode < 300) {
+            return new JsonSlurper().parse(con.inputStream.newReader())
+        } else {
+            def errorText = con.errorStream?.text ?: "No error details provided"
+            throw new RuntimeException("GET request failed to ${request.url}. HTTP $responseCode: $errorText")
+        }
     }
 
     public Object post(RequestBody request) {
         def con = connect(request.url)
         con.setRequestMethod('POST')
+        con.setDoOutput(true)
         for (prop in request.requestProperty) {
             con.setRequestProperty(prop.key, prop.value)
-        }
-
-        if (!sessionId && !sessionVar) {
-            throw new RuntimeException('Missing sessionId and sessionVar for Connection')
         }
 
         if (request.isPassSession) {
@@ -111,12 +190,16 @@ class SessionBasedConnection {
         }
 
         if (request.payload) {
-            con.setDoOutput(true)
             con.outputStream.withCloseable { it << JsonOutput.toJson(request.payload) }
         }
 
-        def response = new JsonSlurper().parse(con.inputStream.newReader())
-        return response
+        int responseCode = con.responseCode
+        if (responseCode >= 200 && responseCode < 300) {
+            return new JsonSlurper().parse(con.inputStream.newReader())
+        } else {
+            def errorText = con.errorStream?.text ?: "No error details provided"
+            throw new RuntimeException("POST request failed to ${request.url}. HTTP $responseCode: $errorText")
+        }
     }
 
     // Function to log in to the SAP B1 Service Layer
