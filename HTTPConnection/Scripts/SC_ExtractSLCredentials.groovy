@@ -6,6 +6,7 @@
 import com.sap.it.api.ITApiFactory
 import com.sap.it.api.securestore.SecureStoreService
 import com.sap.it.api.securestore.UserCredential
+import com.sap.gateway.ip.core.customdev.util.Message
 
 def Message processData(Message message) {
     // 1. Initialize SAP Secure Store Service

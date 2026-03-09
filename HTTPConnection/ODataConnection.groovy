@@ -7,6 +7,13 @@ import java.net.URL
 import java.net.HttpURLConnection
 import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
+import javax.net.ssl.HttpsURLConnection
+import javax.net.ssl.SSLContext
+import javax.net.ssl.TrustManager
+import javax.net.ssl.X509TrustManager
+import javax.net.ssl.HostnameVerifier
+import javax.net.ssl.SSLSession
+import java.security.cert.X509Certificate
 
 /**
  * Represents the configuration for an HTTP OData request.

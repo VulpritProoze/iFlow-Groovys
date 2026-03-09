@@ -1,42 +1,101 @@
+/*
+** This service handles dual-layered logging for SAP Cloud Integration (iFlows).
+** logInternal: Adds an attachment to the SAP Message Processing Log (MPL) for debugging in the SAP Monitor.
+** logExternal: Prints a JSON-structured log to STDOUT for external aggregation and analysis (e.g., Kibana).
+** logBoth: Executes both internal and external logging simultaneously.
+*/
+
 import com.sap.gateway.ip.core.customdev.util.Message
 import groovy.json.JsonOutput
 
+/**
+ * Data Transfer Object (DTO) for structured logging.
+ * Consolidates step information, status, and payload.
+ */
+class LogRequest {
+    /** The title of the log entry / attachment */
+    String title
+    /** The name of the process step being logged */
+    String stepName
+    /** The status of the step (e.g., Success, Error, Info) */
+    String status
+    /** The content or object to be logged */
+    Object payload
+    /** Optional media type for the internal attachment (default: text/plain) */
+    String mediaType = "text/plain"
+}
+
+/**
+ * Handles internal and external logging for SAP Cloud Integration.
+ * 
+ * Example usage:
+ * LoggerService logger = new LoggerService(messageLogFactory, message)
+ * logger.logInternal("Payload Received", body)
+ * logger.logExternal("RequestStep", "Success", [id: 123])
+ * logger.logBoth("Final Status", "Completed", responseBody)
+ */
 class LoggerService {
     def messageLog
     def correlationId
 
-    // Constructor: Initialize with the global factory and the current message
+    /**
+     * Initializes the logger service.
+     * @param messageLogFactory The global message log factory provided by the iFlow engine.
+     * @param message The current iFlow Message object.
+     */
     LoggerService(def messageLogFactory, Message message) {
         if (messageLogFactory != null) {
             this.messageLog = messageLogFactory.getMessageLog(message)
         }
-        // Capture the standard SAP correlation ID to link internal and external logs
         this.correlationId = message.getHeaders().get("SAP_MessageProcessingLogID") ?: "N/A"
     }
 
-    // 1. Internal Logging: Saves as an attachment in the SAP Monitor
-    def logInternal(String title, Object payload, String mediaType = "text/plain") {
-        if (this.messageLog != null && payload != null) {
-            this.messageLog.addAttachmentAsString(title, payload.toString(), mediaType)
+    /**
+     * Adds an attachment to the SAP Message Processing Log (MPL).
+     * Appends the Step Name to the payload content for better visibility.
+     * @param request The LogRequest object containing all logging details.
+     */
+    def logInternal(LogRequest request) {
+        if (this.messageLog != null && request.payload != null) {
+            String enrichedPayload = "Step: ${request.stepName}\nTitle: ${request.title ?: 'N/A'}\nStatus: ${request.status}\n\n${request.payload.toString()}"
+            this.messageLog.addAttachmentAsString(request.title ?: request.stepName, enrichedPayload, request.mediaType)
         }
     }
 
-    // 2. External Logging: Prints to STDOUT for BTP Application Logging (Kibana)
-    def logExternal(String stepName, String status, Object payload) {
-        // Structuring as JSON allows Kibana to automatically index the fields
+    /**
+     * Prints a JSON-structured log to STDOUT for external aggregation (Kibana).
+     * @param request The LogRequest object containing all logging details.
+     */
+    def logExternal(LogRequest request) {
         def logEntry = [
             type         : "IFLOW_EXTERNAL_LOG",
+            title        : request.title,
             correlationId: this.correlationId,
-            step         : stepName,
-            status       : status,
-            payload      : payload != null ? payload.toString() : "null"
+            step         : request.stepName,
+            status       : request.status,
+            payload      : request.payload != null ? request.payload.toString() : "null"
         ]
         println(JsonOutput.toJson(logEntry))
     }
 
-    // 3. Combined Logging: Triggers both methods at once
+    /**
+     * Triggers both internal and external logging using a LogRequest object.
+     * @param request The LogRequest object containing all logging details.
+     */
+    def logBoth(LogRequest request) {
+        logInternal(request)
+        logExternal(request)
+    }
+
+    /**
+     * Overloaded method for quick logging without creating a LogRequest object.
+     * @param title The title/step name for the log.
+     * @param status The status of the operation.
+     * @param payload The data to be logged.
+     */
     def logBoth(String title, String status, Object payload) {
-        logInternal(title, payload)
-        logExternal(title, status, payload)
+        def req = new LogRequest(stepName: title, status: status, payload: payload)
+        logInternal(req)
+        logExternal(req)
     }
 }
