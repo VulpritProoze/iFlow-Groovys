@@ -9,12 +9,15 @@ import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
 
 /**
- * Represents the configuration for an HTTP request.
+ * Represents the configuration for an HTTP OData request.
  * Acts as a Data Transfer Object (DTO) to consolidate URL, payload, and headers.
  */
-class RequestBody {
+class ODataRequestBody {
 
-    /** The relative endpoint URL to be appended to the base URL */
+    /*
+    **  The relative endpoint URL to be appended to the base URL 
+    **  Note: Add filters to the url if needed (e.g. /Items?$filter=ItemCode%20eq%20'i001')
+    */
     String url
     
     /** The Map of data to be sent as a JSON body */
@@ -29,14 +32,139 @@ class RequestBody {
     boolean isPassSession = true
 }
 
-class HTTPSessionBasedConnection {
+/**
+ * Represents the configuration for an HTTP SOAP request.
+ * Acts as a Data Transfer Object (DTO) to consolidate URL, payload, and headers.
+ */
+class SOAPRequestBody {
+    /** The Map of parameters to be sent in the SOAP body */
+    String action
+    Map<String, Object> filters
+
+    /** Request headers (defaults to text/xml) */
+    Map<String, String> requestProperty = [
+        'Content-Type': 'application/xml'
+    ]
+}
+
+class HTTPSOAPConnection {
+
+    private String baseUrl
+    private String id
+    private String key
+    private String company
+
+    public HTTPSOAPConnection(String baseUrl) {
+        this.baseUrl = baseUrl
+    }
+
+    public def setId(String id) {
+        this.id = id
+        return this
+    }
+
+    public def setKey(String key) {
+        this.key = key
+        return this
+    }
+
+    public def setCompany(String company) {
+        this.company = company
+        return this
+    }
+
+    public def setBaseUrl(String url) {
+        this.baseUrl = url
+        return this
+    }
+
+    private HttpURLConnection connect() {
+        if (this.baseUrl == null || this.baseUrl == '') {
+            throw new IllegalStateException('Connection URL cannot be empty. Please set the baseUrl')
+        }
+
+        URL endpoint = new URL(this.baseUrl)
+        HttpURLConnection connection = (HttpURLConnection) endpoint.openConnection()
+
+        if (connection instanceof HttpsURLConnection) {
+            disableSSL()
+        }
+
+        return connection
+    }
+
+    /**
+     * Executes a SOAP POST request.
+     * @param request The configuration object containing the XML action, credentials, and filters.
+     * @return The raw XML response body.
+     */
+    public String post(SOAPRequestBody request) {
+        def con = connect()
+        con.setRequestMethod('POST')
+        con.doOutput = true
+        
+        for (prop in request.requestProperty) {
+            con.setRequestProperty(prop.key, prop.value)
+        }
+
+        String soapEnvelope = buildEnvelope(request)
+
+        con.outputStream.withCloseable { it << soapEnvelope }
+
+        if (con.responseCode >= 200 && con.responseCode < 300) {
+            return con.inputStream.text
+        } else {
+            def errorText = con.errorStream?.text ?: "No error details provided"
+            throw new RuntimeException("SOAP request failed to ${this.baseUrl}. HTTP ${con.responseCode}: $errorText")
+        }
+    }
+
+    private String buildEnvelope(SOAPRequestBody request) {
+        return """<call>
+            <action>${request.action}</action>
+            <params>
+                <id>
+                    <fw3p_id>${this.id}</fw3p_id>
+                    <fw3p_key>${this.key}</fw3p_key>
+                    <fw3p_company>${this.company}</fw3p_company>
+                </id>
+                <data>
+                    <filter>
+                         ${request.filters?.collect { k, v -> "<$k>$v</$k>" }?.join('\n                         ') ?: ''}
+                    </filter>
+                </data>
+            </params>
+        </call>"""
+    }
+
+    private void disableSSL() {
+        TrustManager[] trustAllCerts = [
+            new X509TrustManager() {
+                X509Certificate[] getAcceptedIssuers() { return null }
+                void checkClientTrusted(X509Certificate[] certs, String authType) { }
+                void checkServerTrusted(X509Certificate[] certs, String authType) { }
+            }
+        ] as TrustManager[]
+
+        SSLContext sc = SSLContext.getInstance('TLS')
+        sc.init(null, trustAllCerts, new java.security.SecureRandom())
+        HttpsURLConnection.setDefaultSSLSocketFactory(sc.getSocketFactory())
+
+        HttpsURLConnection.setDefaultHostnameVerifier(new HostnameVerifier() {
+            boolean verify(String hostname, SSLSession session) { return true }
+        })
+    }
+}
+
+
+class HTTPODataConnection {
 
     private String sessionVar
     private String sessionId
     private String baseUrl
     private Object responseBody
 
-    public HTTPSessionBasedConnection(String baseUrl, String sessionVariable) {
+    public HTTPODataConnection(String baseUrl, String sessionVariable) {
         this.baseUrl = baseUrl
         this.sessionVar = sessionVariable
     }
@@ -106,7 +234,7 @@ class HTTPSessionBasedConnection {
      * @param request The configuration object containing the URL and headers.
      * @return The parsed JSON response as a Map or List.
      */
-    public def get(RequestBody request) {
+    public def get(ODataRequestBody request) {
         def con = connect(request.url)
         con.setRequestMethod('GET')
         con.doOutput = true
@@ -138,7 +266,7 @@ class HTTPSessionBasedConnection {
      * @param request The configuration object containing the URL, payload, and headers.
      * @return The parsed JSON response.
      */
-    public def put(RequestBody request) {
+    public def put(ODataRequestBody request) {
         def con = connect(request.url)
         con.setRequestMethod('PUT')
         con.doOutput = true
@@ -170,7 +298,7 @@ class HTTPSessionBasedConnection {
      * @param request The configuration object containing the URL and headers.
      * @return The parsed JSON response or a success status map for 204 responses.
      */
-    public def delete(RequestBody request) {
+    public def delete(ODataRequestBody request) {
         def con = connect(request.url)
         con.setRequestMethod('DELETE')
         for (prop in request.requestProperty) {
@@ -226,7 +354,7 @@ class HTTPSessionBasedConnection {
      * @param request The configuration object containing the URL, payload, and headers.
      * @return The updated HTTPSessionBasedConnection instance for chaining.
      */
-    public def post(RequestBody request) {
+    public def post(ODataRequestBody request) {
         def con = connect(request.url)
         con.setRequestMethod('POST')
         con.setDoOutput(true)

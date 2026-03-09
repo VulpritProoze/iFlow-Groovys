@@ -1,6 +1,6 @@
 def getCredential(Object auth, String credentialKey) {
     if (auth == null) {
-        throw new IllegalStateException("auth not available")
+        throw new IllegalStateException("Auth is not available. Please create an auth detail via ITAPIFactory.getService passed with SecureStoreService.")
     }
     
     def creds = auth.getUserCredential(credentialKey.toString())
