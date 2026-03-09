@@ -1,5 +1,3 @@
-
-
 /*
 ** This script is intended to be used as a reusable script collection in SAP Cloud Integration.
 ** It provides functions for extracting Service Layer credentials from the Secure Store.
