@@ -10,7 +10,7 @@ import com.sap.gateway.ip.core.customdev.util.Message
  * This should be used at the end of an iFlow or after an external call to prevent 
  * sensitive data from being logged or forwarded.
  */
-def Message clearSensitiveHeaders(Message message) {
+def Message processData(Message message) {
     // List of sensitive headers to be removed
     def sensitiveHeaders = [
         "UserName",
@@ -23,7 +23,7 @@ def Message clearSensitiveHeaders(Message message) {
 
     sensitiveHeaders.each { headerName ->
         if (message.getHeaders().containsKey(headerName)) {
-            message.removeHeader(headerName)
+            message.getHeaders().remove(headerName)
         }
     }
 

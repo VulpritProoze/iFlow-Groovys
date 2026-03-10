@@ -35,7 +35,6 @@ class HTTPSOAPConnection {
     private String baseUrl
     private String id
     private String key
-    private String company
 
     public HTTPSOAPConnection(String baseUrl) {
         this.baseUrl = baseUrl
@@ -48,11 +47,6 @@ class HTTPSOAPConnection {
 
     public def setKey(String key) {
         this.key = key
-        return this
-    }
-
-    public def setCompany(String company) {
-        this.company = company
         return this
     }
 
@@ -83,22 +77,26 @@ class HTTPSOAPConnection {
      */
     public String post(SOAPRequestBody request) {
         def con = connect()
-        con.setRequestMethod('POST')
-        con.doOutput = true
-        
-        for (prop in request.requestProperty) {
-            con.setRequestProperty(prop.key, prop.value)
-        }
+        try {
+            con.setRequestMethod('POST')
+            con.doOutput = true
+            
+            for (prop in request.requestProperty) {
+                con.setRequestProperty(prop.key, prop.value)
+            }
 
-        String soapEnvelope = buildEnvelope(request)
+            String soapEnvelope = buildEnvelope(request)
 
-        con.outputStream.withCloseable { it << soapEnvelope }
+            con.outputStream.withCloseable { it << soapEnvelope }
 
-        if (con.responseCode >= 200 && con.responseCode < 300) {
-            return con.inputStream.text
-        } else {
-            def errorText = con.errorStream?.text ?: "No error details provided"
-            throw new RuntimeException("SOAP request failed to ${this.baseUrl}. HTTP ${con.responseCode}: $errorText")
+            if (con.responseCode >= 200 && con.responseCode < 300) {
+                return con.inputStream.text
+            } else {
+                def errorText = con.errorStream?.text ?: "No error details provided"
+                throw new RuntimeException("SOAP request failed to ${this.baseUrl}. HTTP ${con.responseCode}: $errorText")
+            }
+        } finally {
+            con.disconnect()
         }
     }
 
@@ -112,7 +110,6 @@ class HTTPSOAPConnection {
                         <id>
                             <fw3p_id>${this.id}</fw3p_id>
                             <fw3p_key>${this.key}</fw3p_key>
-                            <fw3p_company>${this.company}</fw3p_company>
                         </id>
                         <data>
                             <filter>
