@@ -103,21 +103,27 @@ class HTTPSOAPConnection {
     }
 
     private String buildEnvelope(SOAPRequestBody request) {
-        return """<call>
-            <action>${request.action}</action>
-            <params>
-                <id>
-                    <fw3p_id>${this.id}</fw3p_id>
-                    <fw3p_key>${this.key}</fw3p_key>
-                    <fw3p_company>${this.company}</fw3p_company>
-                </id>
-                <data>
-                    <filter>
-                         ${request.filters?.collect { k, v -> "<$k>$v</$k>" }?.join('\n                         ') ?: ''}
-                    </filter>
-                </data>
-            </params>
-        </call>"""
+        return """<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/">
+            <soapenv:Header/>
+            <soapenv:Body>
+                <call>
+                    <action>${request.action}</action>
+                    <params>
+                        <id>
+                            <fw3p_id>${this.id}</fw3p_id>
+                            <fw3p_key>${this.key}</fw3p_key>
+                            <fw3p_company>${this.company}</fw3p_company>
+                        </id>
+                        <data>
+                            <filter>
+                                ${request.filters?.collect { k, v -> "<$k>$v</$k>" }?.join('\n                         ') ?: ''}
+                            </filter>
+                        </data>
+                    </params>
+                </call>
+            </soapenv:Body>
+        </soapenv:Envelope>
+        """
     }
 
     private void disableSSL() {

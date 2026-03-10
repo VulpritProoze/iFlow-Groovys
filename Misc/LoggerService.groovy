@@ -13,10 +13,10 @@ import groovy.json.JsonOutput
  * Consolidates step information, status, and payload.
  */
 class LogRequest {
-    /** The title of the log entry / attachment */
-    String title
     /** The name of the process step being logged */
     String stepName
+    /** The title of the log entry / attachment */
+    String title
     /** The status of the step (e.g., Success, Error, Info) */
     String status
     /** The content or object to be logged */
@@ -58,7 +58,7 @@ class LoggerService {
     def logInternal(LogRequest request) {
         if (this.messageLog != null && request.payload != null) {
             String enrichedPayload = "Step: ${request.stepName}\nTitle: ${request.title ?: 'N/A'}\nStatus: ${request.status}\n\n${request.payload.toString()}"
-            this.messageLog.addAttachmentAsString(request.title ?: request.stepName, enrichedPayload, request.mediaType)
+            this.messageLog.addAttachmentAsString(request.stepName ?: request.title, enrichedPayload, request.mediaType)
         }
     }
 
