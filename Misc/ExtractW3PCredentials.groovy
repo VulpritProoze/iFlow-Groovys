@@ -2,16 +2,12 @@ import com.sap.it.api.ITApiFactory
 import com.sap.it.api.securestore.SecureStoreService
 import com.sap.gateway.ip.core.customdev.util.Message
 
-/*
- * =====================================================================================
- * SCRIPT NAME: ExtractW3PCredentials.groovy
- * VERSION: 1.0.0
- * 
- * DESCRIPTION:
+/**
  * Logic to extract W3P credentials from the SAP Secure Store and map them to integration variables.
  * 
- * EXAMPLE USAGE (Main Script):
- * -------------------------------------------------------------------------------------
+ * <p>Example usage in a main script:</p>
+ * <pre>
+ * {@code
  *  import com.sap.it.api.ITApiFactory
  *  import com.sap.it.api.securestore.SecureStoreService
  *
@@ -25,7 +21,11 @@ import com.sap.gateway.ip.core.customdev.util.Message
  *
  *      return message
  *  }
- * =====================================================================================
+ * }
+ * </pre>
+ *
+ * @author Ram Alin
+ * @version 1.0.0
  */
 
 /**
