@@ -42,23 +42,17 @@ class ODataRequestBody {
 
 class HTTPODataConnection {
 
-    private String sessionVar
-    private String sessionId
+    private String sessionCookie
     private String baseUrl
     private Object responseBody
 
-    public HTTPODataConnection(String baseUrl, String sessionVariable) {
+    public HTTPODataConnection(String baseUrl, String sessionCookie) {
         this.baseUrl = baseUrl
-        this.sessionVar = sessionVariable
+        this.sessionCookie = sessionCookie
     }
 
-    public def setSessionVar(String variable) {
-        sessionVar = variable
-        return this
-    }
-
-    public def setSessionId(String id) {
-        sessionId = id
+    public def setSessionCookie(String cookie) {
+        this.sessionCookie = cookie
         return this
     }
 
@@ -126,10 +120,10 @@ class HTTPODataConnection {
         }
 
         if (request.isPassSession) {
-            if (!sessionId && !sessionVar) {
-                throw new RuntimeException('Missing sessionId and sessionVar for Connection')
+            if (!sessionCookie) {
+                throw new RuntimeException('Missing sessionCookie for Connection')
             }
-            con.setRequestProperty('Cookie', sessionVar + '=' + sessionId)
+            con.setRequestProperty('Cookie', sessionCookie)
         }
 
         if (request.payload) {
@@ -158,10 +152,10 @@ class HTTPODataConnection {
         }
 
         if (request.isPassSession) {
-            if (!sessionId && !sessionVar) {
-                throw new RuntimeException('Missing sessionId and sessionVar for Connection')
+            if (!sessionCookie) {
+                throw new RuntimeException('Missing sessionCookie for Connection')
             }
-            con.setRequestProperty('Cookie', sessionVar + '=' + sessionId)
+            con.setRequestProperty('Cookie', sessionCookie)
         }
 
         if (request.payload) {
@@ -189,10 +183,10 @@ class HTTPODataConnection {
         }
 
         if (request.isPassSession) {
-            if (!sessionId && !sessionVar) {
-                throw new RuntimeException('Missing sessionId and sessionVar for Connection')
+            if (!sessionCookie) {
+                throw new RuntimeException('Missing sessionCookie for Connection')
             }
-            con.setRequestProperty('Cookie', sessionVar + '=' + sessionId)
+            con.setRequestProperty('Cookie', sessionCookie)
         }
 
         // DELETE can have a payload, though it is not standard
@@ -212,10 +206,10 @@ class HTTPODataConnection {
     }
 
         if (request.isPassSession) {
-            if (!sessionId && !sessionVar) {
-                throw new RuntimeException('Missing sessionId and sessionVar for Connection')
+            if (!sessionCookie) {
+                throw new RuntimeException('Missing sessionCookie for Connection')
             }
-            con.setRequestProperty('Cookie', sessionVar + '=' + sessionId)
+            con.setRequestProperty('Cookie', sessionCookie)
         }
 
         if (request.payload) {
@@ -246,10 +240,10 @@ class HTTPODataConnection {
         }
 
         if (request.isPassSession) {
-            if (!sessionId && !sessionVar) {
-                throw new RuntimeException('Missing sessionId and sessionVar for Connection')
+            if (!sessionCookie) {
+                throw new RuntimeException('Missing sessionCookie for Connection')
             }
-            con.setRequestProperty('Cookie', sessionVar + '=' + sessionId)
+            con.setRequestProperty('Cookie', sessionCookie)
         }
 
         if (request.payload) {
@@ -263,39 +257,6 @@ class HTTPODataConnection {
         } else {
             def errorText = con.errorStream?.text ?: "No error details provided"
             throw new RuntimeException("POST request failed to ${request.url}. HTTP $responseCode: $errorText")
-        }
-    }
-
-    /**
-     * Authenticates with the SAP Business One Service Layer.
-     * Automatically captures and stores the SessionId for subsequent requests.
-     * @param payload Map containing CompanyDB, UserName, and Password.
-     * @return The updated HTTPSessionBasedConnection instance.
-     */
-    public def login(Map<String, String> payload) {
-        try {
-            def url = '/Login'
-            def con = connect(url)
-
-            con.setRequestMethod('POST')
-            con.setDoOutput(true)
-            con.setRequestProperty('Content-Type', 'application/json')
-
-            con.outputStream.withCloseable { it << JsonOutput.toJson(payload) }
-
-            // Read the response
-            int code = con.responseCode
-            if (con.responseCode == 200) {
-                def response = new JsonSlurper().parse(con.inputStream.newReader())
-                this.sessionId = response.SessionId
-                this.responseBody = response
-                return this
-            } else {
-                def errorText = con.getErrorStream()?.text ?: 'Unknown error'
-                throw new RuntimeException("Service Layer login failed. HTTP Response Code: $code, Error: $errorText")
-            }
-        } catch (Exception e) {
-            throw new RuntimeException("Error: ${e.message}", e)
         }
     }
 
