@@ -16,7 +16,7 @@ import java.security.cert.X509Certificate
 
 
 class Constants {
-    static final String STEP_NAME = "W3P GET_WAREHOUSE"
+    static final String STEP_NAME = "W3P_GetWarehouse"
     static final String ACTION = "GET_UOM"
     static final String W3P_CRED = "W3P_CRED"
     static final String W3P_URL = "W3P_URL"
@@ -48,7 +48,7 @@ def Message processData(Message message) {
 
         // 3. Prepare the Request Body
         def request = new SOAPRequestBody(
-            action: Constants.GET_UOM
+            action: Constants.ACTION
         )
 
         // 4. Execute the SOAP Call
@@ -277,7 +277,7 @@ class LoggerService {
     def logInternal(LogRequest request) {
         if (this.messageLog != null && request.payload != null) {
             String enrichedPayload = "Step: ${request.stepName}\nTitle: ${request.title ?: 'N/A'}\nStatus: ${request.status}\n\n${request.payload.toString()}"
-            this.messageLog.addAttachmentAsString(request.title ?: request.stepName, enrichedPayload, request.mediaType)
+            this.messageLog.addAttachmentAsString(request.stepName ?: request.title, enrichedPayload, request.mediaType)
         }
     }
 
