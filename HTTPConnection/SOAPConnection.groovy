@@ -23,6 +23,8 @@ class SOAPRequestBody {
     /** The Map of parameters to be sent in the SOAP body */
     String action
     Map<String, Object> filters = [:]
+    /** Optional XML string for the record/payload (used for POST/PUT) */
+    String record = ""
 
     /** Request headers (defaults to text/xml) */
     Map<String, String> requestProperty = [
@@ -101,6 +103,16 @@ class HTTPSOAPConnection {
     }
 
     private String buildEnvelope(SOAPRequestBody request) {
+        String dataContent = ""
+        
+        if (request.record) {
+            dataContent = "<record>${request.record}</record>"
+        } else if (request.filters) {
+            dataContent = """<filter>
+                                ${request.filters.collect { k, v -> "<$k>$v</$k>" }.join('\n                         ')}
+                            </filter>"""
+        }
+
         return """<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/">
             <soapenv:Header/>
             <soapenv:Body>
@@ -112,9 +124,7 @@ class HTTPSOAPConnection {
                             <fw3p_key>${this.key}</fw3p_key>
                         </id>
                         <data>
-                            <filter>
-                                ${request.filters?.collect { k, v -> "<$k>$v</$k>" }?.join('\n                         ') ?: ''}
-                            </filter>
+                            $dataContent
                         </data>
                     </params>
                 </call>

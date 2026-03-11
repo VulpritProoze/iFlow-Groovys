@@ -27,8 +27,8 @@ class ODataRequestBody {
     */
     String url
     
-    /** The Map of data to be sent as a JSON body */
-    Map<String, Object> payload
+    /** String of payload to be sent as body */
+    String payload
     
     /** Request headers (defaults to application/json) */
     Map<String, String> requestProperty = [
@@ -46,9 +46,8 @@ class HTTPODataConnection {
     private String baseUrl
     private Object responseBody
 
-    public HTTPODataConnection(String baseUrl, String sessionCookie) {
+    public HTTPODataConnection(String baseUrl) {
         this.baseUrl = baseUrl
-        this.sessionCookie = sessionCookie
     }
 
     public def setSessionCookie(String cookie) {
@@ -127,7 +126,7 @@ class HTTPODataConnection {
         }
 
         if (request.payload) {
-            con.outputStream.withCloseable { it << JsonOutput.toJson(request.payload) }
+            con.outputStream.withCloseable { it << request.payload }
         }
 
         if (con.responseCode >= 200 && con.responseCode < 300) {
@@ -159,7 +158,7 @@ class HTTPODataConnection {
         }
 
         if (request.payload) {
-            con.outputStream.withCloseable { it << JsonOutput.toJson(request.payload) }
+            con.outputStream.withCloseable { it << request.payload }
         }
 
         if (con.responseCode >= 200 && con.responseCode < 300) {
@@ -205,31 +204,12 @@ class HTTPODataConnection {
         }
     }
 
-        if (request.isPassSession) {
-            if (!sessionCookie) {
-                throw new RuntimeException('Missing sessionCookie for Connection')
-            }
-            con.setRequestProperty('Cookie', sessionCookie)
-        }
-
-        if (request.payload) {
-            con.setDoOutput(true)
-            con.outputStream.withCloseable { it << JsonOutput.toJson(request.payload) }
-        }
-
-        int responseCode = con.responseCode
-        if (responseCode >= 200 && responseCode < 300) {
-            return new JsonSlurper().parse(con.inputStream.newReader())
-        } else {
-            def errorText = con.errorStream?.text ?: "No error details provided"
-            throw new RuntimeException("GET request failed to ${request.url}. HTTP $responseCode: $errorText")
-        }
-    }
-
     /**
      * Executes an HTTP POST request.
+     * Use this method for standard creation or OData $batch requests.
+     * For batch requests, use url: "/$batch" and provide a multipart/mixed payload.
      * @param request The configuration object containing the URL, payload, and headers.
-     * @return The updated HTTPSessionBasedConnection instance for chaining.
+     * @return The updated HTTPODataConnection instance for chaining.
      */
     public def post(ODataRequestBody request) {
         def con = connect(request.url)
@@ -247,12 +227,17 @@ class HTTPODataConnection {
         }
 
         if (request.payload) {
-            con.outputStream.withCloseable { it << JsonOutput.toJson(request.payload) }
+            con.outputStream.withCloseable { it << request.payload }
         }
 
         int responseCode = con.responseCode
         if (responseCode >= 200 && responseCode < 300) {
-            this.responseBody = new JsonSlurper().parse(con.inputStream.newReader())
+            String contentType = con.getHeaderField("Content-Type")
+            if (contentType && contentType.contains("multipart/mixed")) {
+                this.responseBody = con.inputStream.text
+            } else {
+                this.responseBody = new JsonSlurper().parse(con.inputStream.newReader())
+            }
             return this
         } else {
             def errorText = con.errorStream?.text ?: "No error details provided"

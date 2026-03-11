@@ -12,7 +12,8 @@ def Message clearSensitiveCredentials(Message message) {
         "W3P_Id",
         "W3P_Key",
         "SessionId",
-        "Authorization"
+        "Authorization",
+        "B1SESSION"
     ]
 
     def headers = message.getHeaders()
