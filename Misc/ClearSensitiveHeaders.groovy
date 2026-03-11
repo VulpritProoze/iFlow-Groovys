@@ -3,23 +3,20 @@ import com.sap.gateway.ip.core.customdev.util.Message
 /**
  * Standard SAP Cloud Integration script to clear sensitive headers and properties.
  */
-def Message clearSensitiveCredentials(Message message) {
-    // List of sensitive keys to be removed from both headers and properties
-    def sensitiveKeys = [
+class Constants {
+    static final List<String> SENSITIVE_PROPS_TO_CLEAR = [
         "UserName",
         "Password",
         "CompanyDB",
-        "W3P_Id",
-        "W3P_Key",
-        "SessionId",
-        "Authorization",
         "B1SESSION"
     ]
+}
 
+def Message clearSensitiveCredentials(Message message) {
     def headers = message.getHeaders()
     def properties = message.getProperties()
 
-    sensitiveKeys.each { key ->
+    Constants.SENSITIVE_PROPS_TO_CLEAR.each { key ->
         if (headers.containsKey(key)) {
             headers.remove(key)
         }

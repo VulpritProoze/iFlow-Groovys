@@ -15,6 +15,9 @@ import java.util.regex.Pattern
 
 class Constants {
     static final String STEP_NAME = "SAP_PostWarehouseBulk"
+    static final List<String> SENSITIVE_PROPS_TO_CLEAR = [
+        "B1SESSION"
+    ]
 }
 
 def Message processData(Message message) {
@@ -562,4 +565,24 @@ def String formatBatchResponse(String body) {
     }
 }
 
+
+/**
+ * Standard SAP Cloud Integration script to clear sensitive headers and properties.
+ */
+
+def Message clearSensitiveCredentials(Message message) {
+    def headers = message.getHeaders()
+    def properties = message.getProperties()
+
+    Constants.SENSITIVE_PROPS_TO_CLEAR.each { key ->
+        if (headers.containsKey(key)) {
+            headers.remove(key)
+        }
+        if (properties.containsKey(key)) {
+            properties.remove(key)
+        }
+    }
+
+    return message
+}
 
