@@ -12,9 +12,9 @@ import groovy.json.JsonSlurper
 
 
 class Constants {
-    static final String LOGIN_CREDENTIALS = "SL_LOGIN_CRED" 
-    static final String COMPANY_CREDENTIALS = "SL_COMPANY_CRED" 
-    static final String BASE_URL = "SL_BASE_URL" 
+    static final String LOGIN_CREDENTIALS = "[SL_LOGIN_CRED]" 
+    static final String COMPANY_CREDENTIALS = "[SL_COMPANY_CRED]" 
+    static final String BASE_URL = "[SL_BASE_URL]" 
     static final String SESSION_VAR = "B1SESSION"
 }
 

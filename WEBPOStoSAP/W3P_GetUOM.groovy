@@ -4,7 +4,7 @@
  * Dependencies:
  * - Misc/LoggerService.groovy (Standalone implementation appended below)
  * - Misc/SOAPConnection.groovy (Integrated logic)
- * - Misc/GetCredentials.groovy (Helper methods)
+ * - Misc/ExtractW3PCredentials.groovy (Helper methods)
  */
 import java.net.URL
 import java.net.HttpURLConnection
@@ -26,8 +26,8 @@ import java.security.cert.X509Certificate
 class Constants {
     static final String STEP_NAME = "W3P_GetWarehouse"
     static final String ACTION = "GET_UOM"
-    static final String W3P_CRED = "W3P_CRED"
-    static final String W3P_URL = "W3P_URL"
+    static final String W3P_CRED = "[W3P_CRED]"
+    static final String W3P_URL = "[W3P_URL]"
 }
 
 def Message processData(Message message) {
@@ -345,8 +345,6 @@ class LoggerService {
  * }
  * </pre>
  *
- * @author Ram Alin
- * @version 1.0.0
  */
 
 

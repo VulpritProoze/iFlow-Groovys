@@ -29,9 +29,6 @@ import com.sap.gateway.ip.core.customdev.util.Message
  *  }
  * }
  * </pre>
- *
- * @author Ram Alin
- * @version 1.0.0
  */
 
 /**
@@ -40,8 +37,8 @@ import com.sap.gateway.ip.core.customdev.util.Message
  */
 class Constants {
     // Security Material Alias Names
-    static final String W3P_CRED = "W3P_CRED"
-    static final String W3P_URL = "W3P_URL"
+    static final String W3P_CRED = "[W3P_CRED]"
+    static final String W3P_URL = "[W3P_URL]"
 }
 
 

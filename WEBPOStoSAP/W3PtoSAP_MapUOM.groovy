@@ -1,5 +1,5 @@
 /**
- * W3PtoSAP_MapWarehouse.groovy
+ * W3PtoSAP_MapUOM.groovy
  * 
  * Dependencies:
  * - Misc/Mapper.groovy (Logic refactored and appended below)
@@ -13,17 +13,18 @@ import groovy.json.JsonBuilder;
 import groovy.json.JsonOutput
 
 class Constants {
-    static final String STEP_NAME = "W3PtoSAP_MapWarehouses"
+    static final String STEP_NAME = "W3PtoSAP_MapUOM"
+    
+    /**
+     * Target SAP fields : Source W3P fields
+     */
     static final Map MAPPING = [
-        "WarehouseCode"   : "fsiteid",
-        "WarehouseName"   : "fname",
-        "Inactive"        : "factive_flag",
-        "U_fupdated_date" : "fupdated_date",
-        "Street"          : "fmemo"
+        "Code"                : "fuomid",
+        "Name"                : "fname",
+        "InternationalSymbol" : "fuomid" // Mapping ID to symbol as common practice if symbol is missing
     ]
-    static final Map CUSTOM_RULES = [
-        "Inactive": { val -> (val == "0" || val == "tYES") ? "tYES" : "tNO" }
-    ]
+    
+    static final Map CUSTOM_RULES = [:]
 }
 
 /**
