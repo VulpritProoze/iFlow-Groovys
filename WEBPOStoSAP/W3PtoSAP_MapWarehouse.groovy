@@ -1,82 +1,51 @@
 import com.sap.gateway.ip.core.customdev.util.Message;
 import groovy.util.XmlSlurper;
+import groovy.util.slurpersupport.GPathResult;
 import groovy.json.JsonSlurper;
 import groovy.json.JsonBuilder;
 import groovy.json.JsonOutput
 
+/**
+ * Mapping configuration for Warehouse records.
+ * Defines how source fields from various platforms (SOAP, JSON, W3P) 
+ * map to the target SAP Warehouse structure.
+ */
+class Constants {
+    static final String STEP_NAME = "W3PtoSAP_MapWarehouses"
+    static final Map WAREHOUSE_MAPPING = [
+        "WarehouseCode"   : "fsiteid",
+        "WarehouseName"   : "fname",
+        "Inactive"        : "factive_flag",
+        "U_fupdated_date" : "fupdated_date",
+        "Street"          : "fmemo"
+    ]
+    static final Map CUSTOM_RULES = [
+        "Inactive": { val -> (val == "0" || val == "tYES") ? "tYES" : "tNO" }
+    ]
+}
+
 def Message processData(Message message) {
     def logger = new LoggerService(messageLogFactory, message)
     def payload = message.getBody(java.lang.String);
-    def warehouseRecords = []
 
     try {
-        if (payload.trim().startsWith("<")) {
-            // 2a. Parse the outer SOAP Envelope
-            def soapParser = new XmlSlurper()
-            soapParser.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true)
-            def envelope = soapParser.parseText(payload)
-            
-            // Extract the escaped XML string from the <Result> tag
-            String innerXml = envelope.Body.callResponse.Result.text()
-            
-            if (!innerXml) {
-                 innerXml = envelope.'**'.find { it.name() == 'Result' }?.text()
-            }
-
-            if (!innerXml) throw new RuntimeException("No <Result> tag found in SOAP body.")
-
-            // 2b. Parse the inner XML securely
-            def parser = new XmlSlurper()
-            parser.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true)
-            parser.setFeature("http://xml.org/sax/features/external-general-entities", false)
-            
-            def root = parser.parseText(innerXml);
-            
-            // 3a. Extract records from inner XML
-            warehouseRecords = root.data.record.collect { record ->
-                [
-                    WarehouseCode   : record.fsiteid.text(),
-                    WarehouseName   : record.fname.text(),
-                    Inactive        : (record.factive_flag.text() == "0") ? "tYES" : "tNO",
-                    U_fupdated_date : record.fupdated_date.text(),
-                    Street          : record.fmemo.text()
-                ]
-            }
-        } else {
-            // 2b. Parse JSON
-            def jsonSlurper = new JsonSlurper()
-            def root = jsonSlurper.parseText(payload)
-            
-            def records = []
-            if (root instanceof List) {
-                records = root
-            } else if (root.params?.data?.record) {
-                records = root.params.data.record
-            } else if (root.data?.record) {
-                records = root.data.record
-            } else if (root.record) {
-                records = root.record
-            } else {
-                records = [root]
-            }
-
-            warehouseRecords = records.collect { record ->
-                [
-                    WarehouseCode   : record.fsiteid ?: record.WarehouseCode,
-                    WarehouseName   : record.fname ?: record.WarehouseName,
-                    Inactive        : (record.factive_flag == "0" || record.Inactive == "tYES") ? "tYES" : "tNO",
-                    U_fupdated_date : record.fupdated_date ?: record.U_fupdated_date,
-                    Street          : record.fmemo ?: record.Street
-                ]
-            }
-        }
+        // Use the extracted mapping utility
+        def warehouseRecords = extractMappedRecords(
+            payload, 
+            Constants.WAREHOUSE_MAPPING, 
+            Constants.CUSTOM_RULES
+        )
         
+        if (warehouseRecords.isEmpty() && payload.trim().startsWith("<")) {
+            throw new RuntimeException("No records found or failed to parse XML <Result>.")
+        }
+
         // 4. Wrap it in a uniform JSON structure
         def jsonResult = JsonOutput.toJson(warehouseRecords)
         
         // Log Success
-        logger.logBoth(new LogRequest(
-            stepName: "MapWarehouseData",
+        logger.logInternal(new LogRequest(
+            stepName: Constants.STEP_NAME,
             title: "Mapping Successful",
             status: "Success",
             payload: "Records Mapped: ${warehouseRecords.size()}\n\nResult:\n${JsonOutput.prettyPrint(jsonResult)}"
@@ -87,8 +56,8 @@ def Message processData(Message message) {
         
     } catch (Exception e) {
         // Log Error
-        logger.logBoth(new LogRequest(
-            stepName: "MapWarehouseData_Error",
+        logger.logInternal(new LogRequest(
+            stepName: Constants.STEP_NAME,
             title: "Mapping Failed",
             status: "Error",
             payload: "Exception: ${e.message}\nStacktrace: ${e.stackTrace.take(10).join('\n')}\n\nOriginal Payload:\n${payload}"
@@ -101,18 +70,61 @@ def Message processData(Message message) {
 
 
 
+/**
+ * Agnostic Payload Processor (Refactored from Mapper.groovy)
+ * Dynamically handles both XML (SOAP) and JSON data formats.
+ */
+def extractMappedRecords(String payload, Map mapping, Map customRules = [:]) {
+    def records = []
+    
+    if (payload.trim().startsWith("<")) {
+        def soapParser = new XmlSlurper()
+        soapParser.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true)
+        def envelope = soapParser.parseText(payload)
+        
+        String innerXml = envelope.Body.callResponse.Result.text() ?: envelope.'**'.find { it.name() == 'Result' }?.text()
+        
+        if (!innerXml) return []
 
+        def parser = new XmlSlurper()
+        parser.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true)
+        parser.setFeature("http://xml.org/sax/features/external-general-entities", false)
+        
+        def root = parser.parseText(innerXml)
+        records = root.data.record.collect { it }
+    } else {
+        def jsonSlurper = new JsonSlurper()
+        def root = jsonSlurper.parseText(payload)
+        
+        if (root instanceof List) {
+            records = root
+        } else if (root.params?.data?.record) {
+            records = root.params.data.record
+        } else if (root.data?.record) {
+            records = root.data.record
+        } else if (root.record) {
+            records = root.record
+        } else {
+            records = [root]
+        }
+    }
 
-
-
-
-
-
-
-
-
-
-
+    return records.collect { record ->
+        def result = [:]
+        mapping.each { target, source ->
+            def val = (record instanceof GPathResult) ? 
+                      (record."$source".text() ?: record."$target".text()) : 
+                      (record[source] ?: record[target])
+            
+            if (customRules.containsKey(target)) {
+                result[target] = customRules[target](val)
+            } else {
+                result[target] = val ?: ""
+            }
+        }
+        result
+    }
+}
 
 
 

@@ -8,7 +8,7 @@ import javax.net.ssl.TrustManager
 import javax.net.ssl.X509TrustManager
 import javax.net.ssl.HostnameVerifier
 import javax.net.ssl.SSLSession
-import java.security.cert.X509Certificate
+import java.security.cert.X509Certificate 
 import com.sap.gateway.ip.core.customdev.util.Message
 import java.util.regex.Matcher
 import java.util.regex.Pattern
