@@ -1,3 +1,9 @@
+/**
+ * ExtractW3PCredentials.groovy
+ * 
+ * Dependencies:
+ * - None
+ */
 import com.sap.it.api.ITApiFactory
 import com.sap.it.api.securestore.SecureStoreService
 import com.sap.gateway.ip.core.customdev.util.Message

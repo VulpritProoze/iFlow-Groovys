@@ -1,3 +1,9 @@
+/**
+ * Mapper.groovy
+ * 
+ * Dependencies:
+ * - None
+ */
 import groovy.util.XmlSlurper;
 import groovy.util.slurpersupport.GPathResult;
 import groovy.json.JsonSlurper;

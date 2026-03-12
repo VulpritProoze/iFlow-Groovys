@@ -1,3 +1,9 @@
+/**
+ * LoggerService.groovy
+ * 
+ * Dependencies:
+ * - None
+ */
 /*
 ** This service handles dual-layered logging for SAP Cloud Integration (iFlows).
 ** logInternal: Adds an attachment to the SAP Message Processing Log (MPL) for debugging in the SAP Monitor.

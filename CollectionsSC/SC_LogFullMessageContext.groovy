@@ -1,16 +1,14 @@
-import com.sap.gateway.ip.core.customdev.util.Message
-import java.io.Reader
-
 /**
  * SC_LogFullMessageContext.groovy
  * 
+ * Dependencies:
+ * - Misc/LoggerService.groovy (Standalone implementation appended below)
+ * 
  * Debugging utility to log the Message Body, all Headers, and all Properties
  * to the SAP Cloud Integration Message Processing Log (MPL).
- * 
- * Highly recommended for troubleshooting iFlow logic or inspecting data
- * between steps.
- * 
  */
+import com.sap.gateway.ip.core.customdev.util.Message
+import java.io.Reader
 def Message processData(Message message) {
     def logger = new LoggerService(messageLogFactory, message)
     def combinedLog = new StringBuilder()

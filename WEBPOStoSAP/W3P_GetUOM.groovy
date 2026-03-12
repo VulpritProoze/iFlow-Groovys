@@ -1,3 +1,11 @@
+/**
+ * W3P_GetUOM.groovy
+ * 
+ * Dependencies:
+ * - Misc/LoggerService.groovy (Standalone implementation appended below)
+ * - Misc/SOAPConnection.groovy (Integrated logic)
+ * - Misc/GetCredentials.groovy (Helper methods)
+ */
 import java.net.URL
 import java.net.HttpURLConnection
 import groovy.json.JsonOutput

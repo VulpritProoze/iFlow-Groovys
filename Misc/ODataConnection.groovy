@@ -1,3 +1,9 @@
+/**
+ * ODataConnection.groovy
+ * 
+ * Dependencies:
+ * - None
+ */
 /*
 ** Note that this is an HTTP Connection by default. For a more secure connection, please use HTTPS.
 ** This is only intended for testing.

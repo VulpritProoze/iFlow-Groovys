@@ -1,3 +1,9 @@
+/**
+ * FormatBatchResponse.groovy
+ * 
+ * Dependencies:
+ * - None
+ */
 import com.sap.gateway.ip.core.customdev.util.Message
 import groovy.json.JsonOutput
 import groovy.json.JsonSlurper

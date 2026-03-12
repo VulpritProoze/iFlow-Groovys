@@ -1,12 +1,11 @@
+/**
+ * SC_LogMessageBody.groovy
+ * 
+ * Dependencies:
+ * - Misc/LoggerService.groovy (Standalone implementation appended below)
+ */
 import com.sap.gateway.ip.core.customdev.util.Message
 import groovy.json.JsonOutput
-
-/**
- * SAP BTP iFlow Script function to log the message body.
- *
- * @param message The SAP Cloud Integration Message object.
- * @return The unmodified Message object.
- */
 def Message processData(Message message) {
     def body = message.getBody(java.lang.String)
     

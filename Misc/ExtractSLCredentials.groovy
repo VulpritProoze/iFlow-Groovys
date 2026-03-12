@@ -1,3 +1,9 @@
+/**
+ * ExtractSLCredentials.groovy
+ * 
+ * Dependencies:
+ * - None
+ */
 import com.sap.gateway.ip.core.customdev.util.Message
 import groovy.json.JsonSlurper
 

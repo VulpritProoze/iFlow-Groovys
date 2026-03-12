@@ -1,3 +1,12 @@
+/**
+ * SAP_PostWarehouseBulk.groovy
+ * 
+ * Dependencies:
+ * - Misc/ExtractSLCredentials.groovy (Helper methods appended/integrated)
+ * - Misc/ODataConnection.groovy (Integrated logic)
+ * - Misc/LoggerService.groovy (Standalone implementation appended below)
+ * - Misc/FormatBatchResponse.groovy (Integrated logic)
+ */
 import java.net.URL
 import java.net.HttpURLConnection
 import groovy.json.JsonOutput

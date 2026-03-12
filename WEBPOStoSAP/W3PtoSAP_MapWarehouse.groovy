@@ -1,3 +1,10 @@
+/**
+ * W3PtoSAP_MapWarehouse.groovy
+ * 
+ * Dependencies:
+ * - Misc/Mapper.groovy (Logic refactored and appended below)
+ * - Misc/LoggerService.groovy (Logic refactored and appended below)
+ */
 import com.sap.gateway.ip.core.customdev.util.Message;
 import groovy.util.XmlSlurper;
 import groovy.util.slurpersupport.GPathResult;
@@ -5,11 +12,6 @@ import groovy.json.JsonSlurper;
 import groovy.json.JsonBuilder;
 import groovy.json.JsonOutput
 
-/**
- * Mapping configuration for Warehouse records.
- * Defines how source fields from various platforms (SOAP, JSON, W3P) 
- * map to the target SAP Warehouse structure.
- */
 class Constants {
     static final String STEP_NAME = "W3PtoSAP_MapWarehouses"
     static final Map WAREHOUSE_MAPPING = [
@@ -24,6 +26,16 @@ class Constants {
     ]
 }
 
+/**
+ * Mapping configuration for Warehouse records.
+ * Defines how source fields from various platforms (SOAP, JSON, W3P) 
+ * map to the target SAP Warehouse structure.
+ * 
+ * {@code
+ * // Example usage in processData:
+ * def warehouseRecords = extractMappedRecords(payload, Constants.WAREHOUSE_MAPPING, Constants.CUSTOM_RULES)
+ * }
+ */
 def Message processData(Message message) {
     def logger = new LoggerService(messageLogFactory, message)
     def payload = message.getBody(java.lang.String);
