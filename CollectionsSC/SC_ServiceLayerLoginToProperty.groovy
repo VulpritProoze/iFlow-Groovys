@@ -19,6 +19,7 @@ class Constants {
  * 
  * Centralized script for SAP Business One Service Layer authentication.
  * Performs extraction, HTTP login, and stores the session token as a Message Property.
+ * Details: Logs in to Service Layer, and places cookie to Message Property
  *
  * <p>Example usage in the same iFlow:</p>
  * <pre>

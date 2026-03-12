@@ -12,38 +12,131 @@ import java.io.Reader
  * 
  */
 def Message processData(Message message) {
-    def messageLog = messageLogFactory.getMessageLog(message)
+    def logger = new LoggerService(messageLogFactory, message)
+    def combinedLog = new StringBuilder()
     
-    if (messageLog != null) {
-        // 1. Log Headers
-        def headers = message.getHeaders()
-        def headerLog = new StringBuilder("--- MESSAGE HEADERS ---\n")
-        headers.each { key, value ->
-            headerLog.append("${key}: ${value}\n")
-        }
-        messageLog.addAttachmentAsString("Debug_Headers", headerLog.toString(), "text/plain")
-
-        // 2. Log Properties
-        def properties = message.getProperties()
-        def propertyLog = new StringBuilder("--- MESSAGE PROPERTIES ---\n")
-        properties.each { key, value ->
-            propertyLog.append("${key}: ${value}\n")
-        }
-        messageLog.addAttachmentAsString("Debug_Properties", propertyLog.toString(), "text/plain")
-
-        // 3. Log Message Body (Streaming-Safe)
-        def reader = message.getBody(Reader.class)
-        if (reader != null) {
-            def bodyContent = reader.text
-            messageLog.addAttachmentAsString("Debug_Body", bodyContent ?: "[Empty Body]", "text/plain")
-            
-            // Re-set the body so it can be read by subsequent steps
-            message.setBody(bodyContent)
-            reader.close()
-        } else {
-            messageLog.addAttachmentAsString("Debug_Body", "[No Body Found]", "text/plain")
-        }
+    // 1. Log Headers
+    combinedLog.append("--- MESSAGE HEADERS ---\n")
+    message.getHeaders().each { key, value ->
+        combinedLog.append("${key}: ${value}\n")
     }
+    combinedLog.append("\n\n")
+
+    // 2. Log Properties
+    combinedLog.append("--- MESSAGE PROPERTIES ---\n")
+    message.getProperties().each { key, value ->
+        combinedLog.append("${key}: ${value}\n")
+    }
+    combinedLog.append("\n\n")
+
+    // 3. Log Message Body (Streaming-Safe)
+    combinedLog.append("--- MESSAGE BODY ---\n")
+    def bodyContent = message.getBody(java.lang.String)
+    combinedLog.append(bodyContent ?: "[Empty Body]")
+
+    // Use LoggerService to log the combined context
+    logger.logInternal(new LogRequest(
+        stepName: "LogFullContext",
+        title: "Full Message Context",
+        status: "Debug",
+        payload: combinedLog.toString()
+    ))
 
     return message
 }
+
+/*
+** This service handles dual-layered logging for SAP Cloud Integration (iFlows).
+** logInternal: Adds an attachment to the SAP Message Processing Log (MPL) for debugging in the SAP Monitor.
+** logExternal: Prints a JSON-structured log to STDOUT for external aggregation and analysis (e.g., Kibana).
+** logBoth: Executes both internal and external logging simultaneously.
+*/
+
+
+/**
+ * Data Transfer Object (DTO) for structured logging.
+ * Consolidates step information, status, and payload.
+ */
+class LogRequest {
+    /** The name of the process step being logged */
+    String stepName
+    /** The title of the log entry / attachment */
+    String title
+    /** The status of the step (e.g., Success, Error, Info) */
+    String status
+    /** The content or object to be logged */
+    Object payload
+    /** Optional media type for the internal attachment (default: text/plain) */
+    String mediaType = "text/plain"
+}
+
+/**
+ * Handles internal and external logging for SAP Cloud Integration.
+ */
+class LoggerService {
+    def messageLog
+    def correlationId
+
+    /**
+     * Initializes the logger service.
+     * @param messageLogFactory The global message log factory provided by the iFlow engine.
+     * @param message The current iFlow Message object.
+     */
+    LoggerService(def messageLogFactory, Message message) {
+        if (messageLogFactory != null) {
+            this.messageLog = messageLogFactory.getMessageLog(message)
+        }
+        this.correlationId = message.getHeaders().get("SAP_MessageProcessingLogID") ?: "N/A"
+    }
+
+    /**
+     * Adds an attachment to the SAP Message Processing Log (MPL).
+     * Appends the Step Name to the payload content for better visibility.
+     * @param request The LogRequest object containing all logging details.
+     */
+    def logInternal(LogRequest request) {
+        if (this.messageLog != null && request.payload != null) {
+            String enrichedPayload = "Step: ${request.stepName}\nTitle: ${request.title ?: 'N/A'}\nStatus: ${request.status}\n\n${request.payload.toString()}"
+            this.messageLog.addAttachmentAsString(request.stepName ?: request.title, enrichedPayload, request.mediaType)
+        }
+    }
+
+    /**
+     * Prints a JSON-structured log to STDOUT for external aggregation (Kibana).
+     * @param request The LogRequest object containing all logging details.
+     */
+    def logExternal(LogRequest request) {
+        def logEntry = [
+            type         : "IFLOW_EXTERNAL_LOG",
+            title        : request.title,
+            correlationId: this.correlationId,
+            step         : request.stepName,
+            status       : request.status,
+            payload      : request.payload != null ? request.payload.toString() : "null"
+        ]
+        import groovy.json.JsonOutput
+        println(JsonOutput.toJson(logEntry))
+    }
+
+    /**
+     * Triggers both internal and external logging using a LogRequest object.
+     * @param request The LogRequest object containing all logging details.
+     */
+    def logBoth(LogRequest request) {
+        logInternal(request)
+        logExternal(request)
+    }
+
+    /**
+     * Overloaded method for quick logging without creating a LogRequest object.
+     * @param title The title/step name for the log.
+     * @param status The status of the operation.
+     * @param payload The data to be logged.
+     */
+    def logBoth(String title, String status, Object payload) {
+        def req = new LogRequest(stepName: title, status: status, payload: payload)
+        logInternal(req)
+        logExternal(req)
+    }
+}
+
