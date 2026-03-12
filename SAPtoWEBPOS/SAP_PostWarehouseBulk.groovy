@@ -26,6 +26,8 @@ class Constants {
     static final String STEP_NAME = "SAP_PostWarehouseBulk"
     static final String SESSION_VAR_PROP_NAME = "[B1SESSION]"
     static final String BASE_URL_PROP_NAME = "[SL_BaseURL]"
+    /** The relative OData endpoint for the entity (e.g., /Warehouses) */
+    static final String ENTITY_ENDPOINT = "/Warehouses"
 }
 
 def Message processData(Message message) {
@@ -37,7 +39,7 @@ def Message processData(Message message) {
     }
 
     def reader = message.getBody(java.io.Reader)
-    def warehouseList = new JsonSlurper().parse(reader) 
+    def recordList = new JsonSlurper().parse(reader) 
 
     // 1. Define Unique Boundaries
     String batchId = "batch_" + java.util.UUID.randomUUID().toString()
@@ -49,13 +51,13 @@ def Message processData(Message message) {
     batchBody.append("--${batchId}\r\n")
     batchBody.append("Content-Type: multipart/mixed; boundary=${changesetId}\r\n\r\n")
 
-    warehouseList.each { wh ->
+    recordList.each { record ->
         batchBody.append("--${changesetId}\r\n")
         batchBody.append("Content-Type: application/http\r\n")
         batchBody.append("Content-Transfer-Encoding: binary\r\n\r\n")
-        batchBody.append("POST /b1s/v1/Warehouses\r\n")
+        batchBody.append("POST /b1s/v1${Constants.ENTITY_ENDPOINT}\r\n")
         batchBody.append("Content-Type: application/json\r\n\r\n")
-        batchBody.append(JsonOutput.toJson(wh)).append("\r\n\r\n")
+        batchBody.append(JsonOutput.toJson(record)).append("\r\n\r\n")
     }
 
     batchBody.append("--${changesetId}--\r\n")
@@ -85,7 +87,7 @@ def Message processData(Message message) {
             stepName: Constants.STEP_NAME,
             title: "Batch Request Successful",
             status: "Success", 
-            payload: "Items processed: ${warehouseList.size()}\n\nResponse:\n${formatBatchResponse(rawBody)}"
+            payload: "Records processed: ${recordList.size()}\n\nResponse:\n${formatBatchResponse(rawBody)}"
         ))
         
         message.setBody(rawBody)
@@ -373,8 +375,8 @@ class HTTPODataConnection {
 String extractSessionCookie(Message message) {
     String sessionCookie = message.getProperty(Constants.SESSION_VAR_PROP_NAME)
     
-    if (!sessionCookie || !sessionCookie.startsWith(Constants.SESSION_VAR_PROP_NAME + "=")) {
-        throw new RuntimeException("SessionCookie has invalid format or not found.")
+    if (!sessionCookie) {
+        throw RuntimeException("SessionCookie is missing.")
     }
     return sessionCookie
 }
@@ -389,7 +391,7 @@ String extractBaseUrl(Message message) {
     String baseUrl = message.getProperty(Constants.BASE_URL_PROP_NAME)
 
     if (!baseUrl) {
-        throw new RuntimeException("BaseUrl is missing.")
+        throw RuntimeException("BaseUrl is missing.")
     }
     return baseUrl
 }

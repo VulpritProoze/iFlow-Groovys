@@ -14,8 +14,11 @@ import groovy.json.JsonSlurper
 class Constants {
     static final String LOGIN_CREDENTIALS = "[SL_LOGIN_CRED]" 
     static final String COMPANY_CREDENTIALS = "[SL_COMPANY_CRED]" 
-    static final String BASE_URL = "[SL_BASE_URL]" 
+    static final String BASE_URL = "[SL_BaseUrl]" 
     static final String SESSION_VAR = "B1SESSION"
+    static final String SESSION_VAR_PROP_NAME = "[SL_Session]"
+    static final String BASE_URL_PROP_NAME = "[SL_BaseURL]"
+
 }
 
 
@@ -46,7 +49,7 @@ class Constants {
  */
 def Message processData(Message message) {
     def secureStore = ITApiFactory.getService(SecureStoreService.class, null)
-    def creds = extractSLCredentials(secureStore)
+    def creds = extractSLCredentialsFromSecureStore(secureStore)
     
     // Perform Login Request
     def loginResponse = performServiceLayerLogin(creds)
@@ -54,10 +57,10 @@ def Message processData(Message message) {
     // Store Session Token and URL as Properties
     if (loginResponse.SessionId) {
         // Store in property using format: B1SESSION=SessionID
-        message.setProperty(Constants.SESSION_VAR, Constants.SESSION_VAR + "=" + loginResponse.SessionId)
+        message.setProperty(Constants.SESSION_VAR_PROP_NAME, Constants.SESSION_VAR + "=" + loginResponse.SessionId)
         
         // Pass the Base URL to a Property for the next OData adapter/call
-        message.setProperty("SL_BaseURL", creds.baseUrl)
+        message.setProperty(Constants.BASE_URL_PROP_NAME, creds.baseUrl)
     } else {
         throw new RuntimeException("Service Layer Login failed: No SessionId in response.")
     }
@@ -70,6 +73,7 @@ def Message processData(Message message) {
 
     return message
 }
+
 
 /*
  * =====================================================================================
@@ -112,7 +116,7 @@ private Map performServiceLayerLogin(Map creds) {
 /**
  * Extracts coordinates from Secure Store.
  */
-private Map extractSLCredentials(SecureStoreService service) {
+private Map extractSLCredentialsFromSecureStore(SecureStoreService service) {
     def userCreds = getSecureCredential(service, Constants.LOGIN_CREDENTIALS)
     def companyCreds = getSecureCredential(service, Constants.COMPANY_CREDENTIALS)
     def urlCreds = getSecureCredential(service, Constants.BASE_URL)

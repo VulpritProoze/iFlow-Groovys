@@ -21,10 +21,10 @@ class Constants {
  * def cookie = extractSessionCookie(message)
  */
 String extractSessionCookie(Message message) {
-    String sessionCookie = message.getProperty(SESSION_VAR_PROP_NAME)
+    String sessionCookie = message.getProperty(Constants.SESSION_VAR_PROP_NAME)
     
-    if (!sessionCookie || !sessionCookie.startsWith(CONSTANTS.SESSION_VAR_PROP_NAME + "=")) {
-        throw RuntimeException("SessionCookie has invalid format or not found.")
+    if (!sessionCookie) {
+        throw RuntimeException("SessionCookie is missing.")
     }
     return sessionCookie
 }
@@ -36,7 +36,7 @@ String extractSessionCookie(Message message) {
  * @return String The Base Url.
  */
 String extractBaseUrl(Message message) {
-    String baseUrl = message.getProperty(BASE_URL_PROP_NAME)
+    String baseUrl = message.getProperty(Constants.BASE_URL_PROP_NAME)
 
     if (!baseUrl) {
         throw RuntimeException("BaseUrl is missing.")
