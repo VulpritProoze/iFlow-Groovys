@@ -36,8 +36,6 @@ def Message processData(Message message) {
 ** logBoth: Executes both internal and external logging simultaneously.
 */
 
-import com.sap.gateway.ip.core.customdev.util.Message
-import groovy.json.JsonOutput
 
 /**
  * Data Transfer Object (DTO) for structured logging.
