@@ -29,7 +29,7 @@ Below the package imports, provide an exhaustive docstring for the **core classe
 
 ### 4. General Best Practices
 - **Secure Store**: Always use provided credential extraction logic to retrieve sensitive data from SAP BTP Security Material.
-- **Error Handling**: Ensure scripts throw a `RuntimeException` when critical configurations or credentials are missing to halt iFlow execution correctly.
+- **Error Handling**: Scripts must follow point 5 (next guideline) when returning an error. Do not throw an exception (because they're untrackable in W3P).
 - **Naming Conventions**: Files for script collections should be prefixed with `SC_` (e.g., `SC_MessageContext.groovy`).
 
 ### 5. Standardized Return Patterns
