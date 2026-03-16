@@ -2,7 +2,7 @@
  * LoggerService.groovy
  * 
  * Dependencies:
- * - ExtractW3PCredentials.groovy
+ * - ExtractW3PCredentials.groovy (as private method)
  */
 /*
 ** This service handles dual-layered logging for SAP Cloud Integration (iFlows).
@@ -148,8 +148,7 @@ class LoggerService {
 
             // Credentials extraction handled automatically via Secure Store
             try {
-                def service = ITApiFactory.getService(SecureStoreService.class, null)
-                def credsMap = extractW3PCredentials(service)
+                def credsMap = extractW3PCredentials()
                 
                 if (credsMap.id) this.soapConnection.setId(credsMap.id)
                 if (credsMap.key) this.soapConnection.setKey(credsMap.key)
@@ -163,67 +162,33 @@ class LoggerService {
         }
     }
 
-}
+    /**
+     * Internal helper to extract W3P credentials from the SAP Secure Store.
+     * Defined inside the class to ensure it's accessible to class methods.
+     */
+    private static Map extractW3PCredentials() {
+        def service = ITApiFactory.getService(SecureStoreService.class, null)
+        if (service == null) {
+            throw new IllegalStateException("SecureStoreService is not available.")
+        }
 
+        // Extraction lambda/helper for internal use
+        def getCreds = { String key ->
+            def creds = service.getUserCredential(key)
+            if (creds == null) {
+                throw new IllegalStateException("Credential '${key}' not found in Security Material.")
+            }
+            return creds
+        }
 
-/**
- * ExtractW3PCredentials.groovy
- * 
- * Dependencies:
- * - None
- */
+        def w3pCreds = getCreds(Constants.W3P_CRED)
+        def w3pUrlCreds = getCreds(Constants.W3P_URL)
 
-/**
- * Logic to extract W3P credentials from the SAP Secure Store and map them to integration variables.
- * 
- * <p>Example usage in a main script:</p>
- * <pre>
- * {@code
- *  import com.sap.it.api.ITApiFactory
- *  import com.sap.it.api.securestore.SecureStoreService
- *
- *  def Message processData(Message message) {
- *      def service = ITApiFactory.getService(SecureStoreService.class, null)
- *      def credsMap = extractW3PCredentials(service)
- *
- *      message.setHeader("W3P_Id", credsMap.id)
- *      message.setHeader("W3P_Key", credsMap.key)
- *      message.setProperty("W3P_BaseUrl", credsMap.baseUrl)
- *
- *      return message
- *  }
- * }
- * </pre>
- */
-
-
-/**
- * Method to extract W3P credentials using the SecureStoreService.
- */
-def extractW3PCredentials(SecureStoreService service) {
-    // 1. Extract W3P Credentials from Secure Store using Constants
-    def w3pCreds = getSecureCredential(service, Constants.W3P_CRED)
-    def w3pUrlCreds = getSecureCredential(service, Constants.W3P_URL)
-
-    return [
-        id: w3pCreds.getUsername(),
-        key: new String(w3pCreds.getPassword()),
-        baseUrl: new String(w3pUrlCreds.getPassword())
-    ]
-}
-
-/**
- * Helper method to safely retrieve credentials from the Secure Store.
- */
-private def getSecureCredential(SecureStoreService service, String credentialKey) {
-    if (service == null) {
-        throw new IllegalStateException("SecureStoreService is not available.")
+        return [
+            id: w3pCreds.getUsername(),
+            key: new String(w3pCreds.getPassword()),
+            baseUrl: new String(w3pUrlCreds.getPassword())
+        ]
     }
-    
-    def creds = service.getUserCredential(credentialKey)
-    if (creds == null) {
-        throw new IllegalStateException("Credential '${credentialKey}' not found in Security Material.")
-    }
-    
-    return creds
+
 }
