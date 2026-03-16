@@ -57,12 +57,16 @@ def Message processData(Message message) {
     
     // Extract W3P URL to initialize SOAP connection
     def credsMap = LoggerService.extractW3PCredentials()
-    logger.setSoapConnection(new HTTPSOAPConnection(credsMap.baseUrl))
+    if (credsMap.status != 1) {
+        logger.logInternal(new LogRequest(stepName: "CREDENTIAL_FAILURE", title: Constants.LOG_RECID, status: "ERROR", inputPayload: payload, outputPayload: credsMap.message))
+        return message // Premature return instead of exception
+    }
 
-    def payload = message.getBody(java.lang.String);
+    logger.setSoapConnection(new HTTPSOAPConnection(credsMap.baseUrl))
+    def payload = message.getBody(java.lang.String)
 
     try {
-        // Use the extracted mapping utility
+        // 1. Map data
         def mappedRecords = extractMappedRecords(
             payload, 
             Constants.MAPPING, 
@@ -70,37 +74,35 @@ def Message processData(Message message) {
         )
         
         if (mappedRecords.isEmpty() && payload.trim().startsWith("<")) {
-            throw new RuntimeException("No records found or failed to parse XML <Result>.")
+            logger.logBoth(new LogRequest(stepName: "MAPPING_NO_RECORDS", title: Constants.LOG_RECID, status: "ERROR", inputPayload: payload, outputPayload: "No records found or failed to parse XML <Result>."))
+            return message // Premature return instead of exception
         }
 
-        // 4. Wrap it in a uniform JSON structure
+        // 2. Wrap it in a uniform JSON structure
         def jsonResult = JsonOutput.toJson(mappedRecords)
         
-        // Log Success using logBoth
-        logger.logBoth(new LogRequest(
-            stepName: Constants.STEP_NAME,
-            title: Constants.LOG_RECID, // Used as recordid
-            status: "OK",
-            inputPayload: payload,
-            outputPayload: JsonOutput.prettyPrint(jsonResult)
-        ))
+        // 3. Log Success using logBoth and handle result
+        def logResult = logger.logBoth(new LogRequest(stepName: Constants.STEP_NAME, title: Constants.LOG_RECID, status: "OK", inputPayload: payload, outputPayload: JsonOutput.prettyPrint(jsonResult)))
         
-        // 5. Set the new JSON body back to the message
-        message.setBody(jsonResult);
+        if (logResult.status != 1) {
+            // Log the logging failure using logBoth
+            logger.logBoth(new LogRequest(stepName: "PROCESS_LOG_FAILURE", title: Constants.LOG_RECID, status: "ERROR", inputPayload: payload, outputPayload: "LogProcess failed: ${logResult.message}"))
+        }
+        
+        // 4. Set the new JSON body back to the message
+        message.setBody(jsonResult)
         
     } catch (Exception e) {
         // Log Error using logBoth
-        logger.logBoth(new LogRequest(
-            stepName: Constants.STEP_NAME,
-            title: Constants.LOG_RECID, // Used as recordid
-            status: "ERROR",
-            inputPayload: "Original Payload length: ${payload?.length() ?: 0}",
-            outputPayload: "Exception: ${e.message}\nStacktrace: ${e.stackTrace.join('\n')}"
-        ))
-        throw e
+        def stackTrace = e.stackTrace.take(15).join('\n')
+        def logErrResult = logger.logBoth(new LogRequest(stepName: Constants.STEP_NAME, title: Constants.LOG_RECID, status: "ERROR", inputPayload: "Original Payload length: ${payload?.length() ?: 0}", outputPayload: "Exception: ${e.message}\nStacktrace: ${stackTrace}"))
+
+        if (logErrResult.status != 1) {
+            logger.logBoth(new LogRequest(stepName: "ERROR_LOGGING_FAILURE", title: Constants.LOG_RECID, status: "ERROR", inputPayload: payload, outputPayload: "Failed to log original error to process: ${logErrResult.message}\n\nOriginal Error: ${e.message}"))
+        }
     }
     
-    return message;
+    return message
 }
 
 
@@ -267,22 +269,23 @@ class LoggerService {
     /**
      * Executes process logging via SOAP if the connection is available.
      * @param request The LogRequest object containing internal logging details.
+     * @return Map with status (1: success, 0: validation error, -1: system/server error), message, and payload.
      */
     def logProcess(LogRequest request) {
         if (this.soapConnection == null) {
-            throw new IllegalStateException("LoggerService: logProcess failed - soapConnection not injected.")
+            return [status: -1, message: "LoggerService: logProcess failed - soapConnection not injected."]
         }
 
         // Validate Status
         String status = request.status?.toUpperCase()
         if (!(status in VALID_STATUSES)) {
-            throw new IllegalArgumentException("LoggerService: Invalid status '${status}'. Expected one of: ${VALID_STATUSES}")
+            return [status: 0, message: "LoggerService: Invalid status '${status}'. Expected one of: ${VALID_STATUSES}"]
         }
 
         // Validate Record ID (derived from title)
         String recordId = request.title?.toUpperCase()
         if (!(recordId in VALID_RECORD_IDS)) {
-            throw new IllegalArgumentException("LoggerService: Invalid recordId '${recordId}' (derived from title). Expected one of: ${VALID_RECORD_IDS}")
+            return [status: 0, message: "LoggerService: Invalid recordId '${recordId}' (derived from title). Expected one of: ${VALID_RECORD_IDS}"]
         }
 
         try {
@@ -299,18 +302,18 @@ class LoggerService {
             """.trim()
 
             // Credentials extraction handled automatically via Secure Store
-            try {
-                def credsMap = extractW3PCredentials()
-                
-                if (credsMap.id) this.soapConnection.setId(credsMap.id)
-                if (credsMap.key) this.soapConnection.setKey(credsMap.key)
-            } catch (Exception e) {
-                throw new RuntimeException("LoggerService: Error extracting credentials: ${e.message}", e)
+            def credsMap = extractW3PCredentials()
+            if (credsMap.status != 1) {
+                return credsMap
             }
+            
+            if (credsMap.id) this.soapConnection.setId(credsMap.id)
+            if (credsMap.key) this.soapConnection.setKey(credsMap.key)
 
-            this.soapConnection.post(soapRequest)
+            def response = this.soapConnection.post(soapRequest)
+            return [status: 1, message: "Success", payload: response]
         } catch (Exception e) {
-            throw new RuntimeException("LoggerService: logProcess error: ${e.message}", e)
+            return [status: -1, message: "LoggerService: logProcess error: ${e.message}"]
         }
     }
 
@@ -330,30 +333,39 @@ class LoggerService {
     /**
      * Internal helper to extract W3P credentials from the SAP Secure Store.
      * Defined inside the class to ensure it's accessible to class methods.
+     * @return Map with credentials or error structure.
      */
     private static Map extractW3PCredentials() {
-        def service = ITApiFactory.getService(SecureStoreService.class, null)
-        if (service == null) {
-            throw new IllegalStateException("SecureStoreService is not available.")
-        }
-
-        // Extraction lambda/helper for internal use
-        def getCreds = { String key ->
-            def creds = service.getUserCredential(key)
-            if (creds == null) {
-                throw new IllegalStateException("Credential '${key}' not found in Security Material.")
+        try {
+            def service = ITApiFactory.getService(SecureStoreService.class, null)
+            if (service == null) {
+                return [status: -1, message: "SecureStoreService is not available."]
             }
-            return creds
+
+            // Extraction lambda/helper for internal use
+            def getCreds = { String key ->
+                def creds = service.getUserCredential(key)
+                if (creds == null) {
+                    return null
+                }
+                return creds
+            }
+
+            def w3pCreds = getCreds(Constants.W3P_CRED)
+            if (w3pCreds == null) return [status: -1, message: "Credential '${Constants.W3P_CRED}' not found in Security Material."]
+            
+            def w3pUrlCreds = getCreds(Constants.W3P_URL)
+            if (w3pUrlCreds == null) return [status: -1, message: "Credential '${Constants.W3P_URL}' not found in Security Material."]
+
+            return [
+                status: 1,
+                id: w3pCreds.getUsername(),
+                key: new String(w3pCreds.getPassword()),
+                baseUrl: new String(w3pUrlCreds.getPassword())
+            ]
+        } catch (Exception e) {
+            return [status: -1, message: "Error extracting credentials: ${e.message}"]
         }
-
-        def w3pCreds = getCreds(Constants.W3P_CRED)
-        def w3pUrlCreds = getCreds(Constants.W3P_URL)
-
-        return [
-            id: w3pCreds.getUsername(),
-            key: new String(w3pCreds.getPassword()),
-            baseUrl: new String(w3pUrlCreds.getPassword())
-        ]
     }
 
 }
@@ -416,7 +428,7 @@ class HTTPSOAPConnection {
 
     private HttpURLConnection connect() {
         if (this.baseUrl == null || this.baseUrl == '') {
-            throw new IllegalStateException('Connection URL cannot be empty. Please set the baseUrl')
+            return null
         }
 
         URL endpoint = new URL(this.baseUrl)
@@ -432,37 +444,46 @@ class HTTPSOAPConnection {
     /**
      * Executes a SOAP POST request.
      * @param request The configuration object containing the XML action, credentials, and filters.
-     * @return The raw XML response body.
+     * @return Result Map Structure.
      */
-    public String post(SOAPRequestBody request) {
-        def con = connect()
+    public def post(SOAPRequestBody request) {
         try {
-            con.setRequestMethod('POST')
-            con.doOutput = true
-            
-            for (prop in request.requestProperty) {
-                con.setRequestProperty(prop.key, prop.value)
+            def con = connect()
+            if (con == null) {
+                return [status: -1, message: "Connection URL cannot be empty. Please set the baseUrl"]
             }
 
-            String soapEnvelope = buildEnvelope(request)
+            try {
+                con.setRequestMethod('POST')
+                con.doOutput = true
+                
+                for (prop in request.requestProperty) {
+                    con.setRequestProperty(prop.key, prop.value)
+                }
 
-            con.outputStream.withCloseable { it << soapEnvelope }
+                String soapEnvelope = buildEnvelope(request)
+                if (soapEnvelope instanceof Map) return soapEnvelope // Return validation error from buildEnvelope
 
-            if (con.responseCode >= 200 && con.responseCode < 300) {
-                return con.inputStream.text
-            } else {
-                def errorText = con.errorStream?.text ?: "No error details provided"
-                throw new RuntimeException("SOAP request failed to ${this.baseUrl}. HTTP ${con.responseCode}: $errorText")
+                con.outputStream.withCloseable { it << soapEnvelope }
+
+                if (con.responseCode >= 200 && con.responseCode < 300) {
+                    return [status: 1, message: "Success", payload: con.inputStream.text]
+                } else {
+                    def errorText = con.errorStream?.text ?: "No error details provided"
+                    return [status: -1, message: "SOAP request failed to ${this.baseUrl}. HTTP ${con.responseCode}: $errorText"]
+                }
+            } finally {
+                con.disconnect()
             }
-        } finally {
-            con.disconnect()
+        } catch (Exception e) {
+            return [status: -1, message: "SOAP exception: ${e.message}"]
         }
     }
 
-    private String buildEnvelope(SOAPRequestBody request) {
+    public def buildEnvelope(SOAPRequestBody request) {
         int provided = (request.customEnvelope ? 1 : 0) + (request.record ? 1 : 0) + (request.filters ? 1 : 0)
         if (provided > 1) {
-            throw new IllegalArgumentException("SOAPRequestBody: Only one of 'customEnvelope', 'record', or 'filters' can be provided.")
+            return [status: 0, message: "SOAPRequestBody: Only one of 'customEnvelope', 'record', or 'filters' can be provided."]
         }
 
         String dataContent = ""
@@ -515,3 +536,4 @@ class HTTPSOAPConnection {
         })
     }
 }
+

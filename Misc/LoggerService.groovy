@@ -115,22 +115,23 @@ class LoggerService {
     /**
      * Executes process logging via SOAP if the connection is available.
      * @param request The LogRequest object containing internal logging details.
+     * @return Map with status (1: success, 0: validation error, -1: system/server error), message, and payload.
      */
     def logProcess(LogRequest request) {
         if (this.soapConnection == null) {
-            throw new IllegalStateException("LoggerService: logProcess failed - soapConnection not injected.")
+            return [status: -1, message: "LoggerService: logProcess failed - soapConnection not injected."]
         }
 
         // Validate Status
         String status = request.status?.toUpperCase()
         if (!(status in VALID_STATUSES)) {
-            throw new IllegalArgumentException("LoggerService: Invalid status '${status}'. Expected one of: ${VALID_STATUSES}")
+            return [status: 0, message: "LoggerService: Invalid status '${status}'. Expected one of: ${VALID_STATUSES}"]
         }
 
         // Validate Record ID (derived from title)
         String recordId = request.title?.toUpperCase()
         if (!(recordId in VALID_RECORD_IDS)) {
-            throw new IllegalArgumentException("LoggerService: Invalid recordId '${recordId}' (derived from title). Expected one of: ${VALID_RECORD_IDS}")
+            return [status: 0, message: "LoggerService: Invalid recordId '${recordId}' (derived from title). Expected one of: ${VALID_RECORD_IDS}"]
         }
 
         try {
@@ -147,18 +148,18 @@ class LoggerService {
             """.trim()
 
             // Credentials extraction handled automatically via Secure Store
-            try {
-                def credsMap = extractW3PCredentials()
-                
-                if (credsMap.id) this.soapConnection.setId(credsMap.id)
-                if (credsMap.key) this.soapConnection.setKey(credsMap.key)
-            } catch (Exception e) {
-                throw new RuntimeException("LoggerService: Error extracting credentials: ${e.message}", e)
+            def credsMap = extractW3PCredentials()
+            if (credsMap.status != 1) {
+                return credsMap
             }
+            
+            if (credsMap.id) this.soapConnection.setId(credsMap.id)
+            if (credsMap.key) this.soapConnection.setKey(credsMap.key)
 
-            this.soapConnection.post(soapRequest)
+            def response = this.soapConnection.post(soapRequest)
+            return [status: 1, message: "Success", payload: response]
         } catch (Exception e) {
-            throw new RuntimeException("LoggerService: logProcess error: ${e.message}", e)
+            return [status: -1, message: "LoggerService: logProcess error: ${e.message}"]
         }
     }
 
@@ -178,30 +179,39 @@ class LoggerService {
     /**
      * Internal helper to extract W3P credentials from the SAP Secure Store.
      * Defined inside the class to ensure it's accessible to class methods.
+     * @return Map with credentials or error structure.
      */
     private static Map extractW3PCredentials() {
-        def service = ITApiFactory.getService(SecureStoreService.class, null)
-        if (service == null) {
-            throw new IllegalStateException("SecureStoreService is not available.")
-        }
-
-        // Extraction lambda/helper for internal use
-        def getCreds = { String key ->
-            def creds = service.getUserCredential(key)
-            if (creds == null) {
-                throw new IllegalStateException("Credential '${key}' not found in Security Material.")
+        try {
+            def service = ITApiFactory.getService(SecureStoreService.class, null)
+            if (service == null) {
+                return [status: -1, message: "SecureStoreService is not available."]
             }
-            return creds
+
+            // Extraction lambda/helper for internal use
+            def getCreds = { String key ->
+                def creds = service.getUserCredential(key)
+                if (creds == null) {
+                    return null
+                }
+                return creds
+            }
+
+            def w3pCreds = getCreds(Constants.W3P_CRED)
+            if (w3pCreds == null) return [status: -1, message: "Credential '${Constants.W3P_CRED}' not found in Security Material."]
+            
+            def w3pUrlCreds = getCreds(Constants.W3P_URL)
+            if (w3pUrlCreds == null) return [status: -1, message: "Credential '${Constants.W3P_URL}' not found in Security Material."]
+
+            return [
+                status: 1,
+                id: w3pCreds.getUsername(),
+                key: new String(w3pCreds.getPassword()),
+                baseUrl: new String(w3pUrlCreds.getPassword())
+            ]
+        } catch (Exception e) {
+            return [status: -1, message: "Error extracting credentials: ${e.message}"]
         }
-
-        def w3pCreds = getCreds(Constants.W3P_CRED)
-        def w3pUrlCreds = getCreds(Constants.W3P_URL)
-
-        return [
-            id: w3pCreds.getUsername(),
-            key: new String(w3pCreds.getPassword()),
-            baseUrl: new String(w3pUrlCreds.getPassword())
-        ]
     }
 
 }

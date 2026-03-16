@@ -97,8 +97,8 @@ class HTTPODataConnection {
     }
 
     public HttpURLConnection connect(String url) {
-        if (url == null || '') {
-            throw new IllegalStateException('Connection URL cannot be empty. Please set the baseUrl for this connection')
+        if (url == null || url == '') {
+            return null
         }
 
         URL endpoint = new URL(baseUrl + url)
@@ -114,140 +114,169 @@ class HTTPODataConnection {
     /**
      * Executes an HTTP GET request.
      * @param request The configuration object containing the URL and headers.
-     * @return The parsed JSON response as a Map or List.
+     * @return Result Map Structure.
      */
     public def get(ODataRequestBody request) {
-        def con = connect(request.url)
-        con.setRequestMethod('GET')
-        con.doOutput = true
-        for (prop in request.requestProperty) {
-            con.setRequestProperty(prop.key, prop.value)
-        }
-
-        if (request.isPassSession) {
-            if (!sessionCookie) {
-                throw new RuntimeException('Missing sessionCookie for Connection')
+        try {
+            def con = connect(request.url)
+            if (con == null) {
+                return [status: -1, message: "Connection URL cannot be empty. Please set the baseUrl for this connection"]
             }
-            con.setRequestProperty('Cookie', sessionCookie)
-        }
+            con.setRequestMethod('GET')
+            for (prop in request.requestProperty) {
+                con.setRequestProperty(prop.key, prop.value)
+            }
 
-        if (request.payload) {
-            con.outputStream.withCloseable { it << request.payload }
-        }
+            if (request.isPassSession) {
+                if (!sessionCookie) {
+                    return [status: -1, message: "Missing sessionCookie for Connection"]
+                }
+                con.setRequestProperty('Cookie', sessionCookie)
+            }
 
-        if (con.responseCode >= 200 && con.responseCode < 300) {
-            return new JsonSlurper().parse(con.inputStream.newReader())
-        } else {
-            def errorText = con.errorStream?.text ?: "No error details provided"
-            throw new RuntimeException("POST failed. HTTP ${con.responseCode}: $errorText")
+            if (request.payload) {
+                con.doOutput = true
+                con.outputStream.withCloseable { it << request.payload }
+            }
+
+            if (con.responseCode >= 200 && con.responseCode < 300) {
+                def result = new JsonSlurper().parse(con.inputStream.newReader())
+                return [status: 1, message: "Success", payload: result]
+            } else {
+                def errorText = con.errorStream?.text ?: "No error details provided"
+                return [status: -1, message: "GET failed. HTTP ${con.responseCode}: $errorText"]
+            }
+        } catch (Exception e) {
+            return [status: -1, message: "GET exception: ${e.message}"]
         }
     }
 
     /**
      * Executes an HTTP PUT request.
      * @param request The configuration object containing the URL, payload, and headers.
-     * @return The parsed JSON response.
+     * @return Result Map Structure.
      */
     public def put(ODataRequestBody request) {
-        def con = connect(request.url)
-        con.setRequestMethod('PUT')
-        con.doOutput = true
-        for (prop in request.requestProperty) {
-            con.setRequestProperty(prop.key, prop.value)
-        }
-
-        if (request.isPassSession) {
-            if (!sessionCookie) {
-                throw new RuntimeException('Missing sessionCookie for Connection')
+        try {
+            def con = connect(request.url)
+            if (con == null) {
+                return [status: -1, message: "Connection URL cannot be empty. Please set the baseUrl for this connection"]
             }
-            con.setRequestProperty('Cookie', sessionCookie)
-        }
+            con.setRequestMethod('PUT')
+            con.doOutput = true
+            for (prop in request.requestProperty) {
+                con.setRequestProperty(prop.key, prop.value)
+            }
 
-        if (request.payload) {
-            con.outputStream.withCloseable { it << request.payload }
-        }
+            if (request.isPassSession) {
+                if (!sessionCookie) {
+                    return [status: -1, message: "Missing sessionCookie for Connection"]
+                }
+                con.setRequestProperty('Cookie', sessionCookie)
+            }
 
-        if (con.responseCode >= 200 && con.responseCode < 300) {
-            return new JsonSlurper().parse(con.inputStream.newReader())
-        } else {
-            def errorText = con.errorStream?.text ?: "No error details provided"
-            throw new RuntimeException("PUT failed. HTTP ${con.responseCode}: $errorText")
+            if (request.payload) {
+                con.outputStream.withCloseable { it << request.payload }
+            }
+
+            if (con.responseCode >= 200 && con.responseCode < 300) {
+                def result = new JsonSlurper().parse(con.inputStream.newReader())
+                return [status: 1, message: "Success", payload: result]
+            } else {
+                def errorText = con.errorStream?.text ?: "No error details provided"
+                return [status: -1, message: "PUT failed. HTTP ${con.responseCode}: $errorText"]
+            }
+        } catch (Exception e) {
+            return [status: -1, message: "PUT exception: ${e.message}"]
         }
     }
 
     /**
      * Executes an HTTP DELETE request.
      * @param request The configuration object containing the URL and headers.
-     * @return The parsed JSON response or a success status map for 204 responses.
+     * @return Result Map Structure.
      */
     public def delete(ODataRequestBody request) {
-        def con = connect(request.url)
-        con.setRequestMethod('DELETE')
-        for (prop in request.requestProperty) {
-            con.setRequestProperty(prop.key, prop.value)
-        }
-
-        if (request.isPassSession) {
-            if (!sessionCookie) {
-                throw new RuntimeException('Missing sessionCookie for Connection')
+        try {
+            def con = connect(request.url)
+            if (con == null) {
+                return [status: -1, message: "Connection URL cannot be empty. Please set the baseUrl for this connection"]
             }
-            con.setRequestProperty('Cookie', sessionCookie)
-        }
 
-        // DELETE can have a payload, though it is not standard
-        if (request.payload) {
-            con.doOutput = true
-            con.outputStream.withCloseable { it << JsonOutput.toJson(request.payload) }
-        }
+            con.setRequestMethod('DELETE')
+            for (prop in request.requestProperty) {
+                con.setRequestProperty(prop.key, prop.value)
+            }
 
-        if (con.responseCode >= 200 && con.responseCode < 300) {
-            // Some DELETE responses are 204 No Content
-            if (con.responseCode == 204) return [status: 'Success']
-            return new JsonSlurper().parse(con.inputStream.newReader())
-        } else {
-            def errorText = con.errorStream?.text ?: "No error details provided"
-            throw new RuntimeException("DELETE failed. HTTP ${con.responseCode}: $errorText")
+            if (request.isPassSession) {
+                if (!sessionCookie) {
+                    return [status: -1, message: "Missing sessionCookie for Connection"]
+                }
+                con.setRequestProperty('Cookie', sessionCookie)
+            }
+
+            if (request.payload) {
+                con.doOutput = true
+                con.outputStream.withCloseable { it << request.payload }
+            }
+
+            if (con.responseCode >= 200 && con.responseCode < 300) {
+                if (con.responseCode == 204) return [status: 1, message: "Success"]
+                def result = new JsonSlurper().parse(con.inputStream.newReader())
+                return [status: 1, message: "Success", payload: result]
+            } else {
+                def errorText = con.errorStream?.text ?: "No error details provided"
+                return [status: -1, message: "DELETE failed. HTTP ${con.responseCode}: $errorText"]
+            }
+        } catch (Exception e) {
+            return [status: -1, message: "DELETE exception: ${e.message}"]
         }
     }
 
     /**
      * Executes an HTTP POST request.
-     * Use this method for standard creation or OData $batch requests.
-     * For batch requests, use url: "/$batch" and provide a multipart/mixed payload.
      * @param request The configuration object containing the URL, payload, and headers.
-     * @return The updated HTTPODataConnection instance for chaining.
+     * @return Result Map Structure.
      */
     public def post(ODataRequestBody request) {
-        def con = connect(request.url)
-        con.setRequestMethod('POST')
-        con.setDoOutput(true)
-        for (prop in request.requestProperty) {
-            con.setRequestProperty(prop.key, prop.value)
-        }
-
-        if (request.isPassSession) {
-            if (!sessionCookie) {
-                throw new RuntimeException('Missing sessionCookie for Connection')
+        try {
+            def con = connect(request.url)
+            if (con == null) {
+                return [status: -1, message: "Connection URL cannot be empty. Please set the baseUrl for this connection"]
             }
-            con.setRequestProperty('Cookie', sessionCookie)
-        }
+            
+            con.setRequestMethod('POST')
+            con.setDoOutput(true)
+            for (prop in request.requestProperty) {
+                con.setRequestProperty(prop.key, prop.value)
+            }
 
-        if (request.payload) {
-            con.outputStream.withCloseable { it << request.payload }
-        }
+            if (request.isPassSession) {
+                if (!sessionCookie) {
+                    return [status: -1, message: "Missing sessionCookie for Connection"]
+                }
+                con.setRequestProperty('Cookie', sessionCookie)
+            }
 
-        int responseCode = con.responseCode
-        if (responseCode >= 200 && responseCode < 300) {
-            String contentType = con.getHeaderField("Content-Type")
-            if (contentType && contentType.contains("multipart/mixed")) {
-                this.responseBody = con.inputStream.text
+            if (request.payload) {
+                con.outputStream.withCloseable { it << request.payload }
+            }
+
+            int responseCode = con.responseCode
+            if (responseCode >= 200 && responseCode < 300) {
+                String contentType = con.getHeaderField("Content-Type")
+                if (contentType && contentType.contains("multipart/mixed")) {
+                    this.responseBody = con.inputStream.text
+                } else {
+                    this.responseBody = new JsonSlurper().parse(con.inputStream.newReader())
+                }
+                return [status: 1, message: "Success", payload: this.responseBody]
             } else {
-                this.responseBody = new JsonSlurper().parse(con.inputStream.newReader())
+                def errorText = con.errorStream?.text ?: "No error details provided"
+                return [status: -1, message: "POST failed. HTTP $responseCode: $errorText"]
             }
-            return this
-        } else {
-            def errorText = con.errorStream?.text ?: "No error details provided"
-            throw new RuntimeException("POST request failed to ${request.url}. HTTP $responseCode: $errorText")
+        } catch (Exception e) {
+            return [status: -1, message: "POST exception: ${e.message}"]
         }
     }
 

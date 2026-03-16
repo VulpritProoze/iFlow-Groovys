@@ -67,7 +67,7 @@ class HTTPSOAPConnection {
 
     private HttpURLConnection connect() {
         if (this.baseUrl == null || this.baseUrl == '') {
-            throw new IllegalStateException('Connection URL cannot be empty. Please set the baseUrl')
+            return null
         }
 
         URL endpoint = new URL(this.baseUrl)
@@ -83,37 +83,46 @@ class HTTPSOAPConnection {
     /**
      * Executes a SOAP POST request.
      * @param request The configuration object containing the XML action, credentials, and filters.
-     * @return The raw XML response body.
+     * @return Result Map Structure.
      */
-    public String post(SOAPRequestBody request) {
-        def con = connect()
+    public def post(SOAPRequestBody request) {
         try {
-            con.setRequestMethod('POST')
-            con.doOutput = true
-            
-            for (prop in request.requestProperty) {
-                con.setRequestProperty(prop.key, prop.value)
+            def con = connect()
+            if (con == null) {
+                return [status: -1, message: "Connection URL cannot be empty. Please set the baseUrl"]
             }
 
-            String soapEnvelope = buildEnvelope(request)
+            try {
+                con.setRequestMethod('POST')
+                con.doOutput = true
+                
+                for (prop in request.requestProperty) {
+                    con.setRequestProperty(prop.key, prop.value)
+                }
 
-            con.outputStream.withCloseable { it << soapEnvelope }
+                String soapEnvelope = buildEnvelope(request)
+                if (soapEnvelope instanceof Map) return soapEnvelope // Return validation error from buildEnvelope
 
-            if (con.responseCode >= 200 && con.responseCode < 300) {
-                return con.inputStream.text
-            } else {
-                def errorText = con.errorStream?.text ?: "No error details provided"
-                throw new RuntimeException("SOAP request failed to ${this.baseUrl}. HTTP ${con.responseCode}: $errorText")
+                con.outputStream.withCloseable { it << soapEnvelope }
+
+                if (con.responseCode >= 200 && con.responseCode < 300) {
+                    return [status: 1, message: "Success", payload: con.inputStream.text]
+                } else {
+                    def errorText = con.errorStream?.text ?: "No error details provided"
+                    return [status: -1, message: "SOAP request failed to ${this.baseUrl}. HTTP ${con.responseCode}: $errorText"]
+                }
+            } finally {
+                con.disconnect()
             }
-        } finally {
-            con.disconnect()
+        } catch (Exception e) {
+            return [status: -1, message: "SOAP exception: ${e.message}"]
         }
     }
 
-    private String buildEnvelope(SOAPRequestBody request) {
+    public def buildEnvelope(SOAPRequestBody request) {
         int provided = (request.customEnvelope ? 1 : 0) + (request.record ? 1 : 0) + (request.filters ? 1 : 0)
         if (provided > 1) {
-            throw new IllegalArgumentException("SOAPRequestBody: Only one of 'customEnvelope', 'record', or 'filters' can be provided.")
+            return [status: 0, message: "SOAPRequestBody: Only one of 'customEnvelope', 'record', or 'filters' can be provided."]
         }
 
         String dataContent = ""

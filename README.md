@@ -31,3 +31,14 @@ Below the package imports, provide an exhaustive docstring for the **core classe
 - **Secure Store**: Always use provided credential extraction logic to retrieve sensitive data from SAP BTP Security Material.
 - **Error Handling**: Ensure scripts throw a `RuntimeException` when critical configurations or credentials are missing to halt iFlow execution correctly.
 - **Naming Conventions**: Files for script collections should be prefixed with `SC_` (e.g., `SC_MessageContext.groovy`).
+
+### 5. Standardized Return Patterns
+For service-level methods (like `LoggerService.logProcess`), prefer returning a **Result Map** instead of throwing exceptions. This allows the calling script to handle errors gracefully without halting the entire iFlow.
+
+**Structure of Result Map:**
+- **`status`** (Integer):
+    - `1`: Success
+    - `0`: Validation Error (e.g., invalid input parameters)
+    - `-1`: System/Server Error (e.g., connection failure, credentials missing)
+- **`message`** (String): A descriptive summary of the result or error details.
+- **`payload`** (Optional): The raw response data (e.g., XML/JSON) from the external service on success.
