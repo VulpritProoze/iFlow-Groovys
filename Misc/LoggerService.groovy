@@ -138,13 +138,13 @@ class LoggerService {
             def soapRequest = new SOAPRequestBody()
             soapRequest.action = "POST_LOG"
             
-            // Map the data fields for the record/data section
-            soapRequest.filters = [
-                fstatus_flag: status,
-                frecordid   : recordId,
-                finput_param: request.inputPayload != null ? request.inputPayload.toString() : "null",
-                foutput_param: request.outputPayload != null ? request.outputPayload.toString() : "null"
-            ]
+            // Map the data fields for the custom data section
+            soapRequest.customEnvelope = """
+                    <fstatus_flag>${status}</fstatus_flag>
+                    <frecordid>${recordId}</frecordid>
+                    <finput_param>Step: ${request.stepName}\nTitle: ${request.title}\n\n${escapeXml(request.inputPayload)}</finput_param>
+                    <foutput_param>${escapeXml(request.outputPayload)}</foutput_param>
+            """.trim()
 
             // Credentials extraction handled automatically via Secure Store
             try {
@@ -160,6 +160,19 @@ class LoggerService {
         } catch (Exception e) {
             throw new RuntimeException("LoggerService: logProcess error: ${e.message}", e)
         }
+    }
+
+    /**
+     * Internal helper to escape XML special characters in payloads.
+     */
+    private String escapeXml(Object payload) {
+        if (payload == null) return "null"
+        return payload.toString()
+            .replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+            .replace("\"", "&quot;")
+            .replace("'", "&apos;")
     }
 
     /**

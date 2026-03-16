@@ -77,7 +77,7 @@ def Message processData(Message message) {
             stepName: Constants.STEP_NAME,
             title: Constants.LOG_RECID, // Used as recordid
             status: "OK",
-            inputPayload: "Records Mapped: ${mappedRecords.size()}",
+            inputPayload: payload,
             outputPayload: JsonOutput.prettyPrint(jsonResult)
         ))
         
@@ -90,8 +90,8 @@ def Message processData(Message message) {
             stepName: Constants.STEP_NAME,
             title: Constants.LOG_RECID, // Used as recordid
             status: "ERROR",
-            inputPayload: "Original Payload length: ${payload?.length() ?: 0}",
-            outputPayload: "Exception: ${e.message}\nStacktrace: ${e.stackTrace.take(10).join('\n')}"
+            inputPayload: payload,
+            outputPayload: "Exception: ${e.message}\nStacktrace: ${e.stackTrace.join('\n')}"
         ))
         throw e
     }
@@ -286,13 +286,13 @@ class LoggerService {
             def soapRequest = new SOAPRequestBody()
             soapRequest.action = "POST_LOG"
             
-            // Map the data fields for the record/data section
-            soapRequest.filters = [
-                fstatus_flag: status,
-                frecordid   : recordId,
-                finput_param: request.inputPayload != null ? request.inputPayload.toString() : "null",
-                foutput_param: request.outputPayload != null ? request.outputPayload.toString() : "null"
-            ]
+            // Map the data fields for the custom data section
+            soapRequest.customEnvelope = """
+                    <fstatus_flag>${status}</fstatus_flag>
+                    <frecordid>${recordId}</frecordid>
+                    <finput_param>Step: ${request.stepName}\nTitle: ${request.title}\n\n${escapeXml(request.inputPayload)}</finput_param>
+                    <foutput_param>${escapeXml(request.outputPayload)}</foutput_param>
+            """.trim()
 
             // Credentials extraction handled automatically via Secure Store
             try {
@@ -308,6 +308,19 @@ class LoggerService {
         } catch (Exception e) {
             throw new RuntimeException("LoggerService: logProcess error: ${e.message}", e)
         }
+    }
+
+    /**
+     * Internal helper to escape XML special characters in payloads.
+     */
+    private String escapeXml(Object payload) {
+        if (payload == null) return "null"
+        return payload.toString()
+            .replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+            .replace("\"", "&quot;")
+            .replace("'", "&apos;")
     }
 
     /**
@@ -341,7 +354,6 @@ class LoggerService {
 
 }
 
-
 /**
  * SOAPConnection.groovy
  * 
@@ -353,6 +365,7 @@ class LoggerService {
 ** This is only intended for testing.
 */
 
+
 /**
  * Represents the configuration for an HTTP SOAP request.
  * Acts as a Data Transfer Object (DTO) to consolidate URL, payload, and headers.
@@ -363,6 +376,8 @@ class SOAPRequestBody {
     Map<String, Object> filters = [:]
     /** Optional XML string for the record/payload (used for POST/PUT) */
     String record = ""
+    /** Optional full custom XML envelope string. If provided, default envelope building is bypassed. */
+    String customEnvelope = ""
 
     /** Request headers (defaults to text/xml) */
     Map<String, String> requestProperty = [
@@ -441,9 +456,16 @@ class HTTPSOAPConnection {
     }
 
     private String buildEnvelope(SOAPRequestBody request) {
+        int provided = (request.customEnvelope ? 1 : 0) + (request.record ? 1 : 0) + (request.filters ? 1 : 0)
+        if (provided > 1) {
+            throw new IllegalArgumentException("SOAPRequestBody: Only one of 'customEnvelope', 'record', or 'filters' can be provided.")
+        }
+
         String dataContent = ""
         
-        if (request.record) {
+        if (request.customEnvelope) {
+            dataContent = request.customEnvelope
+        } else if (request.record) {
             dataContent = "<record>${request.record}</record>"
         } else if (request.filters) {
             dataContent = """<filter>

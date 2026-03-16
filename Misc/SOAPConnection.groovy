@@ -31,6 +31,8 @@ class SOAPRequestBody {
     Map<String, Object> filters = [:]
     /** Optional XML string for the record/payload (used for POST/PUT) */
     String record = ""
+    /** Optional full custom XML envelope string. If provided, default envelope building is bypassed. */
+    String customEnvelope = ""
 
     /** Request headers (defaults to text/xml) */
     Map<String, String> requestProperty = [
@@ -109,9 +111,16 @@ class HTTPSOAPConnection {
     }
 
     private String buildEnvelope(SOAPRequestBody request) {
+        int provided = (request.customEnvelope ? 1 : 0) + (request.record ? 1 : 0) + (request.filters ? 1 : 0)
+        if (provided > 1) {
+            throw new IllegalArgumentException("SOAPRequestBody: Only one of 'customEnvelope', 'record', or 'filters' can be provided.")
+        }
+
         String dataContent = ""
         
-        if (request.record) {
+        if (request.customEnvelope) {
+            dataContent = request.customEnvelope
+        } else if (request.record) {
             dataContent = "<record>${request.record}</record>"
         } else if (request.filters) {
             dataContent = """<filter>
