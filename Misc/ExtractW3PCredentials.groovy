@@ -18,8 +18,7 @@ import com.sap.gateway.ip.core.customdev.util.Message
  *  import com.sap.it.api.securestore.SecureStoreService
  *
  *  def Message processData(Message message) {
- *      def service = ITApiFactory.getService(SecureStoreService.class, null)
- *      def credsMap = extractW3PCredentials(service)
+ *      def credsMap = extractW3PCredentials()
  *
  *      message.setHeader("W3P_Id", credsMap.id)
  *      message.setHeader("W3P_Key", credsMap.key)
@@ -43,32 +42,29 @@ class Constants {
 
 
 /**
- * Method to extract W3P credentials using the SecureStoreService.
+ * Method to extract W3P credentials from the SAP Secure Store.
  */
-def extractW3PCredentials(SecureStoreService service) {
-    // 1. Extract W3P Credentials from Secure Store using Constants
-    def w3pCreds = getSecureCredential(service, Constants.W3P_CRED)
-    def w3pUrlCreds = getSecureCredential(service, Constants.W3P_URL)
+def extractW3PCredentials() {
+    def service = ITApiFactory.getService(SecureStoreService.class, null)
+    if (service == null) {
+        throw new IllegalStateException("SecureStoreService is not available.")
+    }
+
+    // Extraction lambda/helper for internal use
+    def getCreds = { String key ->
+        def creds = service.getUserCredential(key)
+        if (creds == null) {
+            throw new IllegalStateException("Credential '${key}' not found in Security Material.")
+        }
+        return creds
+    }
+
+    def w3pCreds = getCreds(Constants.W3P_CRED)
+    def w3pUrlCreds = getCreds(Constants.W3P_URL)
 
     return [
         id: w3pCreds.getUsername(),
         key: new String(w3pCreds.getPassword()),
         baseUrl: new String(w3pUrlCreds.getPassword())
     ]
-}
-
-/**
- * Helper method to safely retrieve credentials from the Secure Store.
- */
-private def getSecureCredential(SecureStoreService service, String credentialKey) {
-    if (service == null) {
-        throw new IllegalStateException("SecureStoreService is not available.")
-    }
-    
-    def creds = service.getUserCredential(credentialKey)
-    if (creds == null) {
-        throw new IllegalStateException("Credential '${credentialKey}' not found in Security Material.")
-    }
-    
-    return creds
 }
