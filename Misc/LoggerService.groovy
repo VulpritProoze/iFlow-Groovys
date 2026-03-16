@@ -124,14 +124,13 @@ class LoggerService {
         // Validate Status
         String status = request.status?.toUpperCase()
         if (!(status in VALID_STATUSES)) {
-            println("LoggerService: Invalid status '${status}'. Defaulting to 'OK'.")
-            status = "OK"
+            throw new IllegalArgumentException("LoggerService: Invalid status '${status}'. Expected one of: ${VALID_STATUSES}")
         }
 
         // Validate Record ID (derived from title)
         String recordId = request.title?.toUpperCase()
         if (!(recordId in VALID_RECORD_IDS)) {
-            println("LoggerService: Invalid recordId '${recordId}' (derived from title). Log may fail downstream.")
+            throw new IllegalArgumentException("LoggerService: Invalid recordId '${recordId}' (derived from title). Expected one of: ${VALID_RECORD_IDS}")
         }
 
         try {
@@ -155,12 +154,12 @@ class LoggerService {
                 if (credsMap.id) this.soapConnection.setId(credsMap.id)
                 if (credsMap.key) this.soapConnection.setKey(credsMap.key)
             } catch (Exception e) {
-                println("LoggerService: Error extracting credentials: ${e.message}")
+                throw new RuntimeException("LoggerService: Error extracting credentials: ${e.message}", e)
             }
 
             this.soapConnection.post(soapRequest)
         } catch (Exception e) {
-            println("LoggerService: logProcess error: ${e.message}")
+            throw new RuntimeException("LoggerService: logProcess error: ${e.message}", e)
         }
     }
 
