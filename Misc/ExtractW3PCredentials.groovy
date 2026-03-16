@@ -45,26 +45,47 @@ class Constants {
  * Method to extract W3P credentials from the SAP Secure Store.
  */
 def extractW3PCredentials() {
-    def service = ITApiFactory.getService(SecureStoreService.class, null)
-    if (service == null) {
-        throw new IllegalStateException("SecureStoreService is not available.")
-    }
-
-    // Extraction lambda/helper for internal use
-    def getCreds = { String key ->
-        def creds = service.getUserCredential(key)
-        if (creds == null) {
-            throw new IllegalStateException("Credential '${key}' not found in Security Material.")
+    try {
+        def service = ITApiFactory.getService(SecureStoreService.class, null)
+        if (service == null) {
+            return [status: -1, message: "SecureStoreService is not available."]
         }
-        return creds
+
+        // Extraction lambda/helper for internal use
+        def getCreds = { String key ->
+            def creds = service.getUserCredential(key)
+            if (creds == null) {
+                return null
+            }
+            return creds
+        }
+
+        def w3pCreds = getCreds(Constants.W3P_CRED)
+        if (w3pCreds == null) {
+            return [status: -1, message: "Credential '${Constants.W3P_CRED}' not found in Security Material."]
+        }
+
+        def w3pUrlCreds = getCreds(Constants.W3P_URL)
+        if (w3pUrlCreds == null) {
+            return [status: -1, message: "Credential '${Constants.W3P_URL}' not found in Security Material."]
+        }
+
+        String id = w3pCreds.getUsername()
+        String key = new String(w3pCreds.getPassword())
+        String baseUrl = new String(w3pUrlCreds.getPassword())
+
+        if (!id || !key || !baseUrl) {
+            return [status: -1, message: "Missing W3P Configuration in Secure Store (${Constants.W3P_CRED}/${Constants.W3P_URL})."]
+        }
+
+        return [
+            status: 1,
+            message: "Success",
+            id: id,
+            key: key,
+            baseUrl: baseUrl
+        ]
+    } catch (Exception e) {
+        return [status: -1, message: "Error extracting credentials: ${e.message}"]
     }
-
-    def w3pCreds = getCreds(Constants.W3P_CRED)
-    def w3pUrlCreds = getCreds(Constants.W3P_URL)
-
-    return [
-        id: w3pCreds.getUsername(),
-        key: new String(w3pCreds.getPassword()),
-        baseUrl: new String(w3pUrlCreds.getPassword())
-    ]
 }

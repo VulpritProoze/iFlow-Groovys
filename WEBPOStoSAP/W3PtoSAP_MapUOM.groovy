@@ -50,15 +50,17 @@ class Constants {
  */
 def Message processData(Message message) {
     def logger = new LoggerService(messageLogFactory, message)
+    def payload = message.getBody(java.lang.String)
     
     // Extract W3P URL to initialize SOAP connection
     def credsMap = LoggerService.extractW3PCredentials()
-    logger.setSoapConnection(new HTTPSOAPConnection(credsMap.baseUrl))
-
-    def payload = message.getBody(java.lang.String);
+    if (credsMap.status != 1) {
+        logger.logInternal(new LogRequest(stepName: "CREDENTIAL_FAILURE", title: Constants.LOG_RECID, status: "ERROR", inputPayload: payload, outputPayload: credsMap.message))
+        return message // Premature return instead of exception
+    }
 
     try {
-        // Use the extracted mapping utility
+        // 1. Map data
         def mappedRecords = extractMappedRecords(
             payload, 
             Constants.MAPPING, 
@@ -66,37 +68,35 @@ def Message processData(Message message) {
         )
         
         if (mappedRecords.isEmpty() && payload.trim().startsWith("<")) {
-            throw new RuntimeException("No records found or failed to parse XML <Result>.")
+            logger.logBoth(new LogRequest(stepName: "MAPPING_NO_RECORDS", title: Constants.LOG_RECID, status: "ERROR", inputPayload: payload, outputPayload: "No records found or failed to parse XML <Result>."))
+            return message // Premature return instead of exception
         }
 
-        // 4. Wrap it in a uniform JSON structure
+        // 2. Wrap it in a uniform JSON structure
         def jsonResult = JsonOutput.toJson(mappedRecords)
         
-        // Log Success using logBoth
-        logger.logBoth(new LogRequest(
-            stepName: Constants.STEP_NAME,
-            title: Constants.LOG_RECID, // Used as recordid
-            status: "OK",
-            inputPayload: payload,
-            outputPayload: JsonOutput.prettyPrint(jsonResult)
-        ))
+        // 3. Log Success using logBoth and handle result
+        def logResult = logger.logBoth(new LogRequest(stepName: Constants.STEP_NAME, title: Constants.LOG_RECID, status: "OK", inputPayload: payload, outputPayload: JsonOutput.prettyPrint(jsonResult)))
         
-        // 5. Set the new JSON body back to the message
-        message.setBody(jsonResult);
+        if (logResult.status != 1) {
+            // Log the logging failure using logBoth
+            logger.logBoth(new LogRequest(stepName: "PROCESS_LOG_FAILURE", title: Constants.LOG_RECID, status: "ERROR", inputPayload: payload, outputPayload: "LogProcess failed: ${logResult.message}"))
+        }
+        
+        // 4. Set the new JSON body back to the message
+        message.setBody(jsonResult)
         
     } catch (Exception e) {
         // Log Error using logBoth
-        logger.logBoth(new LogRequest(
-            stepName: Constants.STEP_NAME,
-            title: Constants.LOG_RECID, // Used as recordid
-            status: "ERROR",
-            inputPayload: payload,
-            outputPayload: "Exception: ${e.message}\nStacktrace: ${e.stackTrace.join('\n')}"
-        ))
-        throw e
+        def stackTrace = e.stackTrace.take(15).join('\n')
+        def logErrResult = logger.logBoth(new LogRequest(stepName: Constants.STEP_NAME, title: Constants.LOG_RECID, status: "ERROR", inputPayload: "Original Payload length: ${payload?.length() ?: 0}", outputPayload: "Exception: ${e.message}\nStacktrace: ${stackTrace}"))
+
+        if (logErrResult.status != 1) {
+            logger.logBoth(new LogRequest(stepName: "ERROR_LOGGING_FAILURE", title: Constants.LOG_RECID, status: "ERROR", inputPayload: payload, outputPayload: "Failed to log original error to process: ${logErrResult.message}\n\nOriginal Error: ${e.message}"))
+        }
     }
     
-    return message;
+    return message
 }
 
 
@@ -204,7 +204,6 @@ class LogRequest {
 class LoggerService {
     def messageLog
     def correlationId
-    private def soapConnection
 
     // Valid Log Statuses
     public static final List<String> VALID_STATUSES = ["OK", "ERROR"]
@@ -222,15 +221,6 @@ class LoggerService {
             this.messageLog = messageLogFactory.getMessageLog(message)
         }
         this.correlationId = message.getHeaders().get("SAP_MessageProcessingLogID") ?: "N/A"
-    }
-
-    /**
-     * Injects a SOAP connection service for process logging.
-     * @param soapConn The HTTPSOAPConnection instance.
-     */
-    def setSoapConnection(def soapConn) {
-        this.soapConnection = soapConn
-        return this
     }
 
     /**
@@ -266,10 +256,6 @@ class LoggerService {
      * @return Map with status (1: success, 0: validation error, -1: system/server error), message, and payload.
      */
     def logProcess(LogRequest request) {
-        if (this.soapConnection == null) {
-            return [status: -1, message: "LoggerService: logProcess failed - soapConnection not injected."]
-        }
-
         // Validate Status
         String status = request.status?.toUpperCase()
         if (!(status in VALID_STATUSES)) {
@@ -283,29 +269,22 @@ class LoggerService {
         }
 
         try {
-            // Use SOAPRequestBody to leverage HTTPSOAPConnection's internal buildEnvelope method
-            def soapRequest = new SOAPRequestBody()
-            soapRequest.action = "POST_LOG"
-            
-            // Map the data fields for the custom data section
-            soapRequest.customEnvelope = """
+            // Credentials extraction handled automatically via Secure Store
+            def credsMap = extractW3PCredentials()
+            if (credsMap.status != 1) {
+                return credsMap
+            }
+
+            String dataContent = """
                     <fstatus_flag>${status}</fstatus_flag>
                     <frecordid>${recordId}</frecordid>
                     <finput_param>Step: ${request.stepName}\nTitle: ${request.title}\n\n${escapeXml(request.inputPayload)}</finput_param>
                     <foutput_param>${escapeXml(request.outputPayload)}</foutput_param>
             """.trim()
 
-            // Credentials extraction handled automatically via Secure Store
-            def credsMap = extractW3PCredentials()
-            if (credsMap.status != 1) {
-                return credsMap
-            }
-            
-            if (credsMap.id) this.soapConnection.setId(credsMap.id)
-            if (credsMap.key) this.soapConnection.setKey(credsMap.key)
+            String soapEnvelope = buildSoapEnvelope("POST_LOG", credsMap.id, credsMap.key, dataContent)
 
-            def response = this.soapConnection.post(soapRequest)
-            return [status: 1, message: "Success", payload: response]
+            return postSoap(credsMap.baseUrl, soapEnvelope)
         } catch (Exception e) {
             return [status: -1, message: "LoggerService: logProcess error: ${e.message}"]
         }
@@ -322,6 +301,76 @@ class LoggerService {
             .replace(">", "&gt;")
             .replace("\"", "&quot;")
             .replace("'", "&apos;")
+    }
+
+    private def postSoap(String baseUrl, String soapEnvelope) {
+        try {
+            if (baseUrl == null || baseUrl == '') {
+                return [status: -1, message: "Connection URL cannot be empty. Please set the baseUrl"]
+            }
+
+            HttpURLConnection con = (HttpURLConnection) new URL(baseUrl).openConnection()
+            if (con instanceof HttpsURLConnection) {
+                disableSSL()
+            }
+
+            try {
+                con.setRequestMethod('POST')
+                con.doOutput = true
+                con.setRequestProperty('Content-Type', 'application/xml')
+                con.outputStream.withCloseable { it << soapEnvelope }
+
+                if (con.responseCode >= 200 && con.responseCode < 300) {
+                    return [status: 1, message: "Success", payload: con.inputStream.text]
+                }
+
+                def errorText = con.errorStream?.text ?: "No error details provided"
+                return [status: -1, message: "SOAP request failed to ${baseUrl}. HTTP ${con.responseCode}: $errorText"]
+            } finally {
+                con.disconnect()
+            }
+        } catch (Exception e) {
+            return [status: -1, message: "SOAP exception: ${e.message}"]
+        }
+    }
+
+    private String buildSoapEnvelope(String action, String id, String key, String dataContent) {
+        return """<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/">
+            <soapenv:Header/>
+            <soapenv:Body>
+                <call>
+                    <action>${action}</action>
+                    <params>
+                        <id>
+                            <fw3p_id>${id}</fw3p_id>
+                            <fw3p_key>${key}</fw3p_key>
+                        </id>
+                        <data>
+                            ${dataContent ?: ''}
+                        </data>
+                    </params>
+                </call>
+            </soapenv:Body>
+        </soapenv:Envelope>
+        """
+    }
+
+    private void disableSSL() {
+        TrustManager[] trustAllCerts = [
+            new X509TrustManager() {
+                X509Certificate[] getAcceptedIssuers() { return null }
+                void checkClientTrusted(X509Certificate[] certs, String authType) { }
+                void checkServerTrusted(X509Certificate[] certs, String authType) { }
+            }
+        ] as TrustManager[]
+
+        SSLContext sc = SSLContext.getInstance('TLS')
+        sc.init(null, trustAllCerts, new java.security.SecureRandom())
+        HttpsURLConnection.setDefaultSSLSocketFactory(sc.getSocketFactory())
+
+        HttpsURLConnection.setDefaultHostnameVerifier(new HostnameVerifier() {
+            boolean verify(String hostname, SSLSession session) { return true }
+        })
     }
 
     /**
@@ -363,6 +412,7 @@ class LoggerService {
     }
 
 }
+
 
 /**
  * SOAPConnection.groovy

@@ -18,19 +18,20 @@ import java.util.regex.Pattern
  * <pre>
  * {@code
  *  String rawResponse = conn.post(batchRequest).toJson()
- *  String formattedJson = formatBatchResponse(rawResponse)
- *  println(formattedJson)
- * }
+ *  def parsedResponse = formatBatchResponse(rawResponse)
+ *  if (parsedResponse.status == 1) {
+ *      println(parsedResponse.payload)
+ *  } }
  * </pre>
  * 
  * @param body The raw multipart/mixed string from the OData response
- * @return String A prettified JSON string containing success counts and per-item details
+ * @return Map A result map with status, message, and formatted JSON payload
  */
-def String formatBatchResponse(String body) {
+def formatBatchResponse(String body) {
     def results = []
 
     if (!body || !body.contains("--batchresponse")) {
-        return body // Not a batch response, return as is
+        return [status: 1, message: "Not a batch response", payload: body] // Not a batch response, return as is safely
     }
 
     try {
@@ -41,7 +42,7 @@ def String formatBatchResponse(String body) {
             boundary = boundaryMatcher.group()
         }
 
-        if (!boundary) return body
+        if (!boundary) return [status: 1, message: "Boundary not found", payload: body]
 
         // 2. Extract individual response parts
         def parts = body.split(java.util.regex.Pattern.quote(boundary))
@@ -74,7 +75,7 @@ def String formatBatchResponse(String body) {
         }
 
         // 3. Format the final output as a pretty JSON string
-        return JsonOutput.prettyPrint(JsonOutput.toJson([
+        String formattedPayload = JsonOutput.prettyPrint(JsonOutput.toJson([
             batchSummary: [
                 totalItems: results.size(),
                 successCount: results.count { it.statusCode >= 200 && it.statusCode < 300 },
@@ -83,8 +84,9 @@ def String formatBatchResponse(String body) {
             details: results
         ]))
         
+        return [status: 1, message: "Success", payload: formattedPayload]
     } catch (Exception e) {
-        return "Batch Parsing Error: ${e.message}\n\nOriginal Body:\n${body}"
+        return [status: -1, message: e.message, payload: body]
     }
 }
 

@@ -39,7 +39,7 @@ class Constants {
     ]
 
     // Logging Constant/s
-    static final String LOG_RECID = "WAREHOUSE"
+    static final String LOG_RECID = "W3P"
 }
 
 /**
@@ -54,6 +54,7 @@ class Constants {
  */
 def Message processData(Message message) {
     def logger = new LoggerService(messageLogFactory, message)
+    def payload = message.getBody(java.lang.String)
     
     // Extract W3P URL to initialize SOAP connection
     def credsMap = LoggerService.extractW3PCredentials()
@@ -61,9 +62,6 @@ def Message processData(Message message) {
         logger.logInternal(new LogRequest(stepName: "CREDENTIAL_FAILURE", title: Constants.LOG_RECID, status: "ERROR", inputPayload: payload, outputPayload: credsMap.message))
         return message // Premature return instead of exception
     }
-
-    logger.setSoapConnection(new HTTPSOAPConnection(credsMap.baseUrl))
-    def payload = message.getBody(java.lang.String)
 
     try {
         // 1. Map data
@@ -210,7 +208,6 @@ class LogRequest {
 class LoggerService {
     def messageLog
     def correlationId
-    private def soapConnection
 
     // Valid Log Statuses
     public static final List<String> VALID_STATUSES = ["OK", "ERROR"]
@@ -228,15 +225,6 @@ class LoggerService {
             this.messageLog = messageLogFactory.getMessageLog(message)
         }
         this.correlationId = message.getHeaders().get("SAP_MessageProcessingLogID") ?: "N/A"
-    }
-
-    /**
-     * Injects a SOAP connection service for process logging.
-     * @param soapConn The HTTPSOAPConnection instance.
-     */
-    def setSoapConnection(def soapConn) {
-        this.soapConnection = soapConn
-        return this
     }
 
     /**
@@ -272,10 +260,6 @@ class LoggerService {
      * @return Map with status (1: success, 0: validation error, -1: system/server error), message, and payload.
      */
     def logProcess(LogRequest request) {
-        if (this.soapConnection == null) {
-            return [status: -1, message: "LoggerService: logProcess failed - soapConnection not injected."]
-        }
-
         // Validate Status
         String status = request.status?.toUpperCase()
         if (!(status in VALID_STATUSES)) {
@@ -289,29 +273,22 @@ class LoggerService {
         }
 
         try {
-            // Use SOAPRequestBody to leverage HTTPSOAPConnection's internal buildEnvelope method
-            def soapRequest = new SOAPRequestBody()
-            soapRequest.action = "POST_LOG"
-            
-            // Map the data fields for the custom data section
-            soapRequest.customEnvelope = """
+            // Credentials extraction handled automatically via Secure Store
+            def credsMap = extractW3PCredentials()
+            if (credsMap.status != 1) {
+                return credsMap
+            }
+
+            String dataContent = """
                     <fstatus_flag>${status}</fstatus_flag>
                     <frecordid>${recordId}</frecordid>
                     <finput_param>Step: ${request.stepName}\nTitle: ${request.title}\n\n${escapeXml(request.inputPayload)}</finput_param>
                     <foutput_param>${escapeXml(request.outputPayload)}</foutput_param>
             """.trim()
 
-            // Credentials extraction handled automatically via Secure Store
-            def credsMap = extractW3PCredentials()
-            if (credsMap.status != 1) {
-                return credsMap
-            }
-            
-            if (credsMap.id) this.soapConnection.setId(credsMap.id)
-            if (credsMap.key) this.soapConnection.setKey(credsMap.key)
+            String soapEnvelope = buildSoapEnvelope("POST_LOG", credsMap.id, credsMap.key, dataContent)
 
-            def response = this.soapConnection.post(soapRequest)
-            return [status: 1, message: "Success", payload: response]
+            return postSoap(credsMap.baseUrl, soapEnvelope)
         } catch (Exception e) {
             return [status: -1, message: "LoggerService: logProcess error: ${e.message}"]
         }
@@ -328,6 +305,76 @@ class LoggerService {
             .replace(">", "&gt;")
             .replace("\"", "&quot;")
             .replace("'", "&apos;")
+    }
+
+    private def postSoap(String baseUrl, String soapEnvelope) {
+        try {
+            if (baseUrl == null || baseUrl == '') {
+                return [status: -1, message: "Connection URL cannot be empty. Please set the baseUrl"]
+            }
+
+            HttpURLConnection con = (HttpURLConnection) new URL(baseUrl).openConnection()
+            if (con instanceof HttpsURLConnection) {
+                disableSSL()
+            }
+
+            try {
+                con.setRequestMethod('POST')
+                con.doOutput = true
+                con.setRequestProperty('Content-Type', 'application/xml')
+                con.outputStream.withCloseable { it << soapEnvelope }
+
+                if (con.responseCode >= 200 && con.responseCode < 300) {
+                    return [status: 1, message: "Success", payload: con.inputStream.text]
+                }
+
+                def errorText = con.errorStream?.text ?: "No error details provided"
+                return [status: -1, message: "SOAP request failed to ${baseUrl}. HTTP ${con.responseCode}: $errorText"]
+            } finally {
+                con.disconnect()
+            }
+        } catch (Exception e) {
+            return [status: -1, message: "SOAP exception: ${e.message}"]
+        }
+    }
+
+    private String buildSoapEnvelope(String action, String id, String key, String dataContent) {
+        return """<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/">
+            <soapenv:Header/>
+            <soapenv:Body>
+                <call>
+                    <action>${action}</action>
+                    <params>
+                        <id>
+                            <fw3p_id>${id}</fw3p_id>
+                            <fw3p_key>${key}</fw3p_key>
+                        </id>
+                        <data>
+                            ${dataContent ?: ''}
+                        </data>
+                    </params>
+                </call>
+            </soapenv:Body>
+        </soapenv:Envelope>
+        """
+    }
+
+    private void disableSSL() {
+        TrustManager[] trustAllCerts = [
+            new X509TrustManager() {
+                X509Certificate[] getAcceptedIssuers() { return null }
+                void checkClientTrusted(X509Certificate[] certs, String authType) { }
+                void checkServerTrusted(X509Certificate[] certs, String authType) { }
+            }
+        ] as TrustManager[]
+
+        SSLContext sc = SSLContext.getInstance('TLS')
+        sc.init(null, trustAllCerts, new java.security.SecureRandom())
+        HttpsURLConnection.setDefaultSSLSocketFactory(sc.getSocketFactory())
+
+        HttpsURLConnection.setDefaultHostnameVerifier(new HostnameVerifier() {
+            boolean verify(String hostname, SSLSession session) { return true }
+        })
     }
 
     /**
@@ -369,6 +416,7 @@ class LoggerService {
     }
 
 }
+
 
 /**
  * SOAPConnection.groovy

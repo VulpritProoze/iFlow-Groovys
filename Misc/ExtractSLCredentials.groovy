@@ -5,7 +5,6 @@
  * - None
  */
 import com.sap.gateway.ip.core.customdev.util.Message
-import groovy.json.JsonSlurper
 
 
 class Constants {
@@ -14,32 +13,32 @@ class Constants {
 }
 
 /**
- * Standalone method to extract SessionId from a Message Property and return 
- * it as a formatted B1SESSION cookie string.
+ * Standalone method to extract SessionId from a Message Property.
+ * Returns standardized Result Map.
  *
  * Usage in another script:
- * def cookie = extractSessionCookie(message)
+ * def cookieMap = extractSessionCookie(message)
  */
-String extractSessionCookie(Message message) {
+def extractSessionCookie(Message message) {
     String sessionCookie = message.getProperty(Constants.SESSION_VAR_PROP_NAME)
     
     if (!sessionCookie) {
-        throw RuntimeException("SessionCookie is missing.")
+        return [status: -1, message: "SessionCookie is missing."]
     }
-    return sessionCookie
+    return [status: 1, message: "Success", payload: sessionCookie]
 }
 
 /**
  * Extracts the BaseUrl from a Message Property.
  * 
  * @param message The SAP CI Message object.
- * @return String The Base Url.
+ * @return Map Result structure with status, message, payload.
  */
-String extractBaseUrl(Message message) {
+def extractBaseUrl(Message message) {
     String baseUrl = message.getProperty(Constants.BASE_URL_PROP_NAME)
 
     if (!baseUrl) {
-        throw RuntimeException("BaseUrl is missing.")
+        return [status: -1, message: "BaseUrl is missing."]
     }
-    return baseUrl
+    return [status: 1, message: "Success", payload: baseUrl]
 }
