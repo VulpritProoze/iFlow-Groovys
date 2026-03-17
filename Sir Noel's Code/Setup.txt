@@ -1,0 +1,10 @@
+POST
+https://saptest.alliancewebpos.com/b1s/v1/SQLQueries
+
+{
+ "SqlCode": "GetLastPurPrice",
+ "SqlName": "GetLastPurPrice",
+ "SqlText": "select LastPurPrc,LstEvlPric from OITM WHERE ItemCode = :ItemCode"
+}
+
+//to call GET https://saptest.alliancewebpos.com/b1s/v1/SQLQueries('GetLastPurPrice1')/List?ItemCode='ACS-BATHSOAP-PERSONALCARE-4806507833358'
