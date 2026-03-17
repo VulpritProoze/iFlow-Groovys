@@ -1,15 +1,18 @@
 /**
- * W3P_GetUOM.groovy
+ * AgnosticW3PGetter.groovy
  * 
  * Dependencies:
  * - Misc/LoggerService.groovy (Standalone implementation appended below)
  * - Misc/SOAPConnection.groovy (Integrated logic)
  * - Misc/ExtractW3PCredentials.groovy (Helper methods)
+ * - Misc/BuildXmlResponse.groovy
+ * - Misc/ExtractW3PTimestampAndBatch.groovy
  */
 import java.net.URL
 import java.net.HttpURLConnection
 import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
+import groovy.util.XmlSlurper
 import com.sap.gateway.ip.core.customdev.util.Message
 import com.sap.it.api.ITApiFactory
 import com.sap.it.api.securestore.SecureStoreService
@@ -21,13 +24,18 @@ import javax.net.ssl.X509TrustManager
 import javax.net.ssl.HostnameVerifier
 import javax.net.ssl.SSLSession
 import java.security.cert.X509Certificate
+import java.time.ZonedDateTime
+import java.time.format.DateTimeFormatter
+import java.time.ZoneOffset
+
 
 
 class Constants {
-    static final String STEP_NAME = "W3P_GetWarehouse"
-    static final String ACTION = "GET_UOM"
+    static final String STEP_NAME = "[StepName]"
+    static final String ACTION = "GET_[Action]"
     static final String W3P_CRED = "[W3P_CRED]"
     static final String W3P_URL = "[W3P_URL]"
+    static final String TIMESTAMP_PROP_VAR = "[Timestamp]"
 
     // Default filter values for WebPOS SOAP requests.
     static final Map FILTERS = [:]
@@ -66,12 +74,28 @@ def Message processData(Message message) {
             logger.logBoth(new LogRequest(title: Constants.LOG_RECID, stepName: Constants.STEP_NAME, status: "ERROR", inputPayload: payload, outputPayload: soapResult.message ?: "SOAP call failed"))
             return message
         }
-        String responseXml = soapResult.payload?.toString() ?: ""
-        
+        def responseXml = soapResult.payload?.toString() ?: ""
+
         logger.logBoth(new LogRequest(title: Constants.LOG_RECID, stepName: Constants.STEP_NAME, status: "OK", inputPayload: payload, outputPayload: responseXml))
-        
-        // 5. Update the Message Body with the XML response as a String
-        message.setBody(responseXml)
+
+        // Extract W3P fields (fnew_batchid, flast_batchid, flast_key, fdone)
+        def extractRes = extractW3PTimestampAndBatch(responseXml)
+        if (extractRes?.status == 1) {
+            def p = extractRes.payload ?: [:]
+            if (p.fnew) message.setProperty("${Constants.ACTION}-fnew_batchid", p.fnew)
+            if (p.flast) message.setProperty("${Constants.ACTION}-flast_batchid", p.flast)
+            if (p.fkey) message.setProperty("${Constants.ACTION}-flast_key", p.fkey)
+            if (p.fdone) message.setProperty("${Constants.ACTION}-fdone", p.fdone)
+        } else {
+            logger.logBoth(new LogRequest(title: Constants.LOG_RECID, stepName: Constants.STEP_NAME, status: "ERROR", inputPayload: payload, outputPayload: "extractW3PTimestampAndBatch failed: ${extractRes?.message}"))
+        }
+
+        // Always use the append helper — it handles creating or inserting into
+        // a <responses> wrapper. We do not set any message properties here.
+        def res = appendCustomXmlResponseToBody(message, Constants.ACTION, responseXml)
+        if (res?.status != 1) {
+            logger.logBoth(new LogRequest(title: Constants.LOG_RECID, stepName: Constants.STEP_NAME, status: "ERROR", inputPayload: payload, outputPayload: "appendCustomXmlResponseToBody failed: ${res?.message}"))
+        }
 
     } catch (Exception e) {
         logger.logBoth(new LogRequest(title: Constants.LOG_RECID, stepName: Constants.STEP_NAME, status: "ERROR", inputPayload: payload, outputPayload: "Exception: ${e.message}\nStacktrace: ${e.stackTrace.take(5).join('\n')}"))
@@ -544,5 +568,133 @@ def extractW3PCredentials() {
         ]
     } catch (Exception e) {
         return [status: -1, message: "Error extracting credentials: ${e.message}"]
+    }
+}
+
+
+
+/**
+ * BuildXmlResponse.groovy
+ * Helper utilities to build and append XML response fragments into the current
+ * iFlow `message` body. These helpers are library functions (no processData).
+ *
+ * Two exported functions:
+ *  - appendCustomXmlResponseToBody(message, uniqueId, xmlResponse)
+ *      -> appends the built <response> into a top-level <responses> root in the
+ *         message body, sets message property `W3P_Key` to uniqueId and returns
+ *         a result Map similar to buildCustomXmlResponse.
+ *
+ * Behavior notes:
+ * - Response XML is preserved inside a CDATA in the <value> element.
+ * - Existing body handling:
+ *   - If body already contains a <responses>...</responses> root, the new
+ *     <response> is inserted before the closing tag.
+ *   - If body is non-empty but not wrapped, the existing body is wrapped as the
+ *     first <response> element (key taken from existing `W3P_Key` property if present).
+ *   - Empty body => creates <responses> with a single <response> element.
+ * - Functions never throw; errors return a result map with status 0.
+ */
+
+
+/**
+ * Append a built <response> element into the `message` body under a
+ * <responses> root. Sets message property `W3P_Key` to uniqueId on success.
+ * Returns a result Map: status/message/payload (payload contains the new body).
+ */
+def appendCustomXmlResponseToBody(def msg, String uniqueId, String xmlResponse) {
+    try {
+        if (!msg) {
+            return [status: 0, message: 'appendCustomXmlResponseToBody: message is required', payload: null]
+        }
+
+        def buildRes = buildCustomXmlResponse(uniqueId, xmlResponse)
+        if (buildRes.status != 1) {
+            return [status: 0, message: "Failed to build response: ${buildRes.message}", payload: buildRes.payload]
+        }
+
+        String element = buildRes.payload.toString()
+        String uid = uniqueId ?: java.util.UUID.randomUUID().toString()
+
+        String current = msg.getBody(java.lang.String) ?: ''
+
+        if (current?.trim()) {
+            // Insert into existing <responses> root if present
+            if (current.contains('<responses') && current.contains('</responses>')) {
+                int idx = current.lastIndexOf('</responses>')
+                if (idx >= 0) {
+                    String newBody = current.substring(0, idx) + element + current.substring(idx)
+                    msg.setBody(newBody)
+                    return [status: 1, message: 'Appended to existing <responses>', payload: newBody]
+                }
+            }
+
+            // Wrap existing body as the first <response>
+            String existingNoDecl = stripXmlDeclaration(current)
+            String safeExisting = existingNoDecl.replace(']]>', ']]]]><![CDATA[>')
+            String existingKey = msg.getProperty('W3P_Key') ?: 'existing'
+            String firstResponse = "<response><key>${escapeXml(existingKey)}</key><value><![CDATA[${safeExisting}]]></value></response>"
+            String newBody = "<responses>${firstResponse}${element}</responses>"
+            msg.setBody(newBody)
+            return [status: 1, message: 'Wrapped existing body and appended new response', payload: newBody]
+        } else {
+            // Empty body -> create new responses root
+            String newBody = "<responses>${element}</responses>"
+            msg.setBody(newBody)
+            return [status: 1, message: 'Created <responses> and added response', payload: newBody]
+        }
+    } catch (Exception e) {
+        return [status: 0, message: "appendCustomXmlResponseToBody error: ${e.message}", payload: e?.stackTrace?.take(5)?.collect{ it.toString() }]
+    }
+}
+
+
+
+private String stripXmlDeclaration(String s) {
+    if (!s) return ''
+    return s.replaceFirst(/^\s*<\?xml.*?\?>\s*/, '')
+}
+
+private String escapeXml(String s) {
+    if (s == null) return ''
+    return s.toString().replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;').replace("'", '&apos;')
+}
+
+/* Example usage:
+   def responseXml = soapResult.payload?.toString() ?: ''
+   def uid = java.util.UUID.randomUUID().toString()
+   def res = appendCustomXmlResponseToBody(message, uid, responseXml)
+   // check res.status and proceed
+*/
+
+/**
+ * Extracts W3P timestamp and batch fields from the provided XML. 
+ * Fields extracted: fnew_batchid, flast_batchid, flast_key, fdone.
+ *
+ * Returns a result Map: [status:1,message:'Success',payload:[...]] or error map.
+ */
+def extractW3PTimestampAndBatch(String xml) {
+    try {
+        if (!xml) return [status: 0, message: 'No XML provided', payload: null]
+
+        def parser = new XmlSlurper()
+        parser.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true)
+        parser.setFeature("http://xml.org/sax/features/external-general-entities", false)
+        parser.setFeature("http://xml.org/sax/features/external-parameter-entities", false)
+
+        def root = parser.parseText(xml)
+
+        def findFirst = { String name ->
+            def node = root.'**'.find { it.name() == name }
+            return node ? node.text() : null
+        }
+
+        def fnew = findFirst('fnew_batchid')
+        def flast = findFirst('flast_batchid')
+        def fkey = findFirst('flast_key')
+        def fdone = findFirst('fdone')
+
+        return [status: 1, message: 'Success', payload: [fnew: fnew, flast: flast, fkey: fkey, fdone: fdone]]
+    } catch (Exception e) {
+        return [status: 0, message: "extractW3PTimestampAndBatch error: ${e?.message}", payload: null]
     }
 }

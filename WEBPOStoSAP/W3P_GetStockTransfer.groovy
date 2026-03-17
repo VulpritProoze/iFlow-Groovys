@@ -29,6 +29,9 @@ class Constants {
     static final String W3P_CRED = "[W3P_CRED]"
     static final String W3P_URL = "[W3P_URL]"
 
+    // Default filter values for WebPOS SOAP requests.
+    static final Map FILTERS = [:]
+
     // Logging Constant/s
     static final String LOG_RECID = "W3P"
 }
@@ -54,6 +57,9 @@ def Message processData(Message message) {
             action: Constants.ACTION
         )
 
+        // Use the global FILTERS constant directly so users can override filter values externally
+        request.filters = Constants.FILTERS
+
         // 4. Execute the SOAP Call
         def soapResult = soapConn.post(request)
         if (soapResult.status != 1) {
@@ -74,7 +80,6 @@ def Message processData(Message message) {
     
     return message
 }
-
 
 
 

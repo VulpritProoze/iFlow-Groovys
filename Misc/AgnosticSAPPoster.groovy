@@ -1,5 +1,5 @@
 /**
- * AgnosticMapper.groovy
+ * AgnosticSAPPoster.groovy
  * 
  * Dependencies:
  * - Misc/ExtractSLCredentials.groovy (Helper methods appended/integrated)
