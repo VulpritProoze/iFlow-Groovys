@@ -2,7 +2,6 @@
  * W3PtoSAP_MapWarehouse.groovy
  * 
  * Dependencies:
- * - Misc/Mapper.groovy (Logic refactored and appended below)
  * - Misc/LoggerService.groovy (Logic refactored and appended below)
  */
 import com.sap.gateway.ip.core.customdev.util.Message;

@@ -198,11 +198,59 @@ class HTTPSOAPConnection {
                 finalFlastKey = pageParsed.data.flast_key?.text() ?: finalFlastKey
                 finalFdone = pageParsed.data.fdone?.text() ?: finalFdone
 
-                // collect records
-                pageParsed.data.record.each { rec ->
-                    String recXml = XmlUtil.serialize(rec)
-                    recXml = recXml.replaceFirst(/<\?xml.*?\?>\s*/, '')
-                    allRecordFragments << recXml
+                // collect records - robust multi-strategy extraction to avoid truncation
+                def collectPageRecordFragments = { String pageText, def parsedPage ->
+                    def fragments = []
+
+                    // 1) Try serializing parsed <record> nodes (best when parser read correctly)
+                    try {
+                        parsedPage.data.record.each { rec ->
+                            String recXml = XmlUtil.serialize(rec)
+                            recXml = recXml.replaceFirst(/<\?xml.*?\?>\s*/, '')
+                            if (recXml?.trim()) fragments << recXml
+                        }
+                    } catch (e) { /* ignore */ }
+                    if (fragments) return fragments
+
+                    // 2) Try direct regex on pageText
+                    try {
+                        def m = (pageText =~ /(?s)<record\b[^>]*?(?:\/>|>.*?<\/record>)/)
+                        if (m && m.size() > 0) {
+                            m.each { mm -> if (mm[0]?.trim()) fragments << mm[0] }
+                        }
+                    } catch (e) { /* ignore */ }
+                    if (fragments) return fragments
+
+                    // 3) Iteratively unescape and regex (handles double-escaped content)
+                    try {
+                        def unescaped = pageText ?: ''
+                        while (true) {
+                            def next = unescaped.replaceAll('&lt;', '<').replaceAll('&gt;', '>').replaceAll('&quot;', '"').replaceAll('&apos;', "'").replaceAll('&amp;', '&')
+                            if (next == unescaped) break
+                            unescaped = next
+                        }
+                        def m2 = (unescaped =~ /(?s)<record\b[^>]*?(?:\/>|>.*?<\/record>)/)
+                        if (m2 && m2.size() > 0) {
+                            m2.each { mm -> if (mm[0]?.trim()) fragments << mm[0] }
+                        }
+                    } catch (e) { /* ignore */ }
+                    if (fragments) return fragments
+
+                    // 4) Fallback: serialize entire <data> then extract
+                    try {
+                        String dataXml = XmlUtil.serialize(parsedPage.data)
+                        dataXml = dataXml.replaceFirst(/<\?xml.*?\?>\s*/, '')
+                        String inner = dataXml.replaceFirst(/^\s*<data[^>]*>/, '').replaceFirst(/<\/data>\s*$/, '')
+                        def m3 = (inner =~ /(?s)<record\b[^>]*?(?:\/>|>.*?<\/record>)/)
+                        if (m3 && m3.size() > 0) { m3.each { mm -> if (mm[0]?.trim()) fragments << mm[0] } }
+                    } catch (e) { /* ignore */ }
+
+                    return fragments
+                }
+
+                def pageFrags = collectPageRecordFragments(resultText, pageParsed)
+                if (pageFrags && pageFrags.size() > 0) {
+                    pageFrags.each { f -> allRecordFragments << f }
                 }
 
                 // stop condition
@@ -216,25 +264,30 @@ class HTTPSOAPConnection {
             }
 
             // Build finalResponse: if no records were collected, return concatenated page results as fallback
+            // Use manual concatenation to avoid MarkupBuilder edge-cases that may truncate
+            // or mangle raw fragments when they contain unexpected constructs.
             String finalResponse
             if (allRecordFragments.size() == 0) {
                 finalResponse = pageResults.join('\n')
             } else {
-                def writer = new StringWriter()
-                def mb = new groovy.xml.MarkupBuilder(writer)
-                mb.mkp.xmlDeclaration(version: '1.0', encoding: 'utf-8')
-                mb.root {
-                    data {
-                        fnew_batchid(finalFnewBatchid)
-                        flast_batchid(finalFlastBatchid)
-                        flast_key(finalFlastKey)
-                        fdone(finalFdone)
-                        allRecordFragments.each { r ->
-                            mkp.yieldUnescaped(r)
-                        }
+                def sb = new StringBuilder()
+                sb.append("""<?xml version='1.0' encoding='utf-8'?>\n<root>\n  <data>\n""")
+                sb.append("    <fnew_batchid>${finalFnewBatchid}</fnew_batchid>\n")
+                sb.append("    <flast_batchid>${finalFlastBatchid}</flast_batchid>\n")
+                sb.append("    <flast_key>${finalFlastKey}</flast_key>\n")
+                sb.append("    <fdone>${finalFdone}</fdone>\n")
+                allRecordFragments.each { r ->
+                    try {
+                        String rec = r.replaceFirst(/^\s*<\?xml.*?\?>\s*/, '')
+                        sb.append(rec)
+                        if (!rec.endsWith('\n')) sb.append('\n')
+                    } catch (e) {
+                        sb.append(r)
+                        if (!r.endsWith('\n')) sb.append('\n')
                     }
                 }
-                finalResponse = writer.toString()
+                sb.append('  </data>\n</root>\n')
+                finalResponse = sb.toString()
             }
 
             // Escape the inner XML and wrap it in the SOAP envelope/Result structure

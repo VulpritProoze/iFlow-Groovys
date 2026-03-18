@@ -118,11 +118,6 @@ def Message processData(Message message) {
 }
 
 
-/*
-** Note that this is an HTTP Connection by default. For a more secure connection, please use HTTPS.
-** This is only intended for testing.
-*/
-
 /**
  * Represents the configuration for an HTTP OData request.
  * Acts as a Data Transfer Object (DTO) to consolidate URL, payload, and headers.
@@ -408,6 +403,7 @@ class HTTPODataConnection {
 }
 
 
+
 /**
  * ExtractSLCredentials.groovy
  * 
@@ -445,6 +441,7 @@ def extractBaseUrl(Message message) {
     }
     return [status: 1, message: "Success", payload: baseUrl]
 }
+
 
 
 

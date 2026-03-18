@@ -27,6 +27,18 @@ class Constants {
     static final String W3P_CRED = "[W3P_CRED]"
     static final String W3P_URL = "[W3P_URL]"
     static final String STEP_NAME = "W3PtoSAP_[StepName]"
+    /**
+     * Mapping configuration
+     * - Keys are target field names.
+     * - Values are source expressions. Supported expression forms:
+     *     1) "RESPONSE_KEY.field" -> takes the first record's `field` from the response with key `RESPONSE_KEY`.
+     *     2) "fieldName" -> when processing a single set of records, uses the current record's element `fieldName`.
+     *     3) Concatenation with `+`: e.g. "GET_ITEM1.fitemcode + GET_ITEM2.fitemcode" will concatenate both resolved values.
+     *     4) Literal strings: wrap in single or double quotes inside the expression, e.g. "'PRE-' + GET_ITEM1.fitemcode".
+     * Notes:
+     * - When multiple `<record>` nodes are present in a response, the mapper defaults to the first record for `RESPONSE_KEY.field` lookups.
+     * - If a reference cannot be resolved it falls back to an empty string.
+     */
     static final Map MAPPING = [:]
     static final Map CUSTOM_RULES = [:]
 
@@ -102,27 +114,153 @@ def Message processData(Message message) {
  * Dynamically handles both XML (SOAP) and JSON data formats.
  */
 def extractMappedRecords(String payload, Map mapping, Map customRules = [:]) {
-    def records = []
-    
-    if (payload.trim().startsWith("<")) {
-        def soapParser = new XmlSlurper()
-        soapParser.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true)
-        def envelope = soapParser.parseText(payload)
-        
-        String innerXml = envelope.Body.callResponse.Result.text() ?: envelope.'**'.find { it.name() == 'Result' }?.text()
-        
-        if (!innerXml) return []
+    if (!payload) return []
+    payload = payload.toString()
 
-        def parser = new XmlSlurper()
-        parser.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true)
-        parser.setFeature("http://xml.org/sax/features/external-general-entities", false)
-        
-        def root = parser.parseText(innerXml)
-        records = root.data.record.collect { it }
+    // Helper: safe XmlSlurper factory
+    def newSafeSlurper = {
+        def sp = new XmlSlurper()
+        try {
+            sp.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true)
+            sp.setFeature("http://xml.org/sax/features/external-general-entities", false)
+            sp.setFeature("http://xml.org/sax/features/external-parameter-entities", false)
+        } catch (e) {
+            // ignore if not supported
+        }
+        return sp
+    }
+
+    // Convert a GPathResult <record> to a plain map (text values unescaped)
+    def recordToMap = { GPathResult rec ->
+        def m = [:]
+        def rid = rec.@id?.toString()
+        if (rid) m['id'] = rid
+        rec.children().each { ch ->
+            if (ch?.name()) m[ch.name()] = ch.text()
+        }
+        return m
+    }
+
+    // Resolve a single token (either RESPONSE.field or a plain field or literal)
+    def resolveToken = { String token, Map responsesMap, Map currentRecord = null ->
+        if (!token) return ''
+        token = token.trim()
+        // literal quoted string
+        if ((token.startsWith("\'") && token.endsWith("\'")) || (token.startsWith('"') && token.endsWith('"'))) {
+            return token.substring(1, token.length() - 1)
+        }
+
+        // RESPONSE.field lookup
+        def m = token =~ /^([A-Za-z0-9_]+)\.([A-Za-z0-9_]+)$/
+        if (m.matches()) {
+            def rkey = m[0][1]
+            def fname = m[0][2]
+            def rv = responsesMap[rkey]?.first?.get(fname)
+            return rv ?: ''
+        }
+
+        // current record field
+        if (currentRecord != null && currentRecord.containsKey(token)) {
+            return currentRecord[token] ?: ''
+        }
+
+        // fallback literal
+        return token
+    }
+
+    // Resolve an expression possibly containing '+' concatenations
+    def resolveExpression = { String expr, Map responsesMap, Map currentRecord = null ->
+        if (expr == null) return ''
+        if (!(expr instanceof String)) return expr.toString()
+        def parts = expr.split(/\s*\+\s*/)
+        def sb = new StringBuilder()
+        parts.each { part -> sb.append(resolveToken(part, responsesMap, currentRecord)) }
+        return sb.toString()
+    }
+
+    // Parse XML payload
+    if (payload.trim().startsWith('<')) {
+        def sl = newSafeSlurper()
+        def envelope = sl.parseText(payload)
+
+        // Detect if payload is an aggregated <responses> wrapper
+        def responsesRoot = null
+        if (envelope.name() == 'responses') {
+            responsesRoot = envelope
+        } else {
+            responsesRoot = envelope.'**'.find { it.name() == 'responses' }
+        }
+
+        if (responsesRoot) {
+            // Build responses map: key -> { records: [map], first: map }
+            def responsesMap = [:]
+            responsesRoot.response.each { resp ->
+                def rkey = resp.key?.text()?.trim()
+                if (!rkey) return
+                def respValue = resp.value?.text() ?: ''
+                def entry = [records: [], first: [:]]
+                try {
+                    if (respValue) {
+                        def valEnv = newSafeSlurper().parseText(respValue)
+                        def inner = valEnv.Body?.callResponse?.Result?.text() ?: valEnv.'**'.find { it.name() == 'Result' }?.text()
+                        if (inner) {
+                            def innerRoot = newSafeSlurper().parseText(inner)
+                            innerRoot.data.record.each { rec ->
+                                entry.records << recordToMap(rec)
+                            }
+                            entry.first = entry.records ? entry.records[0] : [:]
+                            entry.raw = inner
+                        }
+                    }
+                } catch (e) {
+                    // ignore parsing errors for this response
+                }
+                responsesMap[rkey] = entry
+            }
+
+            // Build a single mapped result from Constants.MAPPING using responsesMap
+            def mapped = [:]
+            mapping.each { target, sourceSpec ->
+                def resolved = resolveExpression(sourceSpec?.toString(), responsesMap, null)
+                if (customRules.containsKey(target)) mapped[target] = customRules[target](resolved) else mapped[target] = resolved ?: ''
+            }
+            return [mapped]
+        }
+
+        // Not a <responses> wrapper: parse as existing SOAP->Result->innerXml flow
+        def innerXml = envelope.Body?.callResponse?.Result?.text() ?: envelope.'**'.find { it.name() == 'Result' }?.text()
+        if (!innerXml) {
+            // maybe direct data structure
+            def root = envelope
+            def rawRecords = []
+            try { rawRecords = root.data.record.collect { it } } catch (e) { rawRecords = [] }
+            return rawRecords.collect { rec ->
+                def recMap = (rec instanceof GPathResult) ? recordToMap(rec) : (rec instanceof Map ? rec : [value: rec.toString()])
+                def mapped = [:]
+                mapping.each { target, sourceSpec ->
+                    def resolved = resolveExpression(sourceSpec?.toString(), [:], recMap)
+                    if (customRules.containsKey(target)) mapped[target] = customRules[target](resolved) else mapped[target] = resolved ?: ''
+                }
+                mapped
+            }
+        }
+
+        def innerRoot = newSafeSlurper().parseText(innerXml)
+        def gRecords = innerRoot.data.record
+        return gRecords.collect { rec ->
+            def recMap = recordToMap(rec)
+            def mapped = [:]
+            mapping.each { target, sourceSpec ->
+                def resolved = resolveExpression(sourceSpec?.toString(), [:], recMap)
+                if (customRules.containsKey(target)) mapped[target] = customRules[target](resolved) else mapped[target] = resolved ?: ''
+            }
+            mapped
+        }
     } else {
+        // JSON path (unchanged)
         def jsonSlurper = new JsonSlurper()
         def root = jsonSlurper.parseText(payload)
-        
+        def records = []
         if (root instanceof List) {
             records = root
         } else if (root.params?.data?.record) {
@@ -134,22 +272,16 @@ def extractMappedRecords(String payload, Map mapping, Map customRules = [:]) {
         } else {
             records = [root]
         }
-    }
 
-    return records.collect { record ->
-        def result = [:]
-        mapping.each { target, source ->
-            def val = (record instanceof GPathResult) ? 
-                      (record."$source".text() ?: record."$target".text()) : 
-                      (record[source] ?: record[target])
-            
-            if (customRules.containsKey(target)) {
-                result[target] = customRules[target](val)
-            } else {
-                result[target] = val ?: ""
+        return records.collect { record ->
+            def recMap = (record instanceof Map) ? record : record
+            def mapped = [:]
+            mapping.each { target, sourceSpec ->
+                def resolved = resolveExpression(sourceSpec?.toString(), [:], recMap)
+                if (customRules.containsKey(target)) mapped[target] = customRules[target](resolved) else mapped[target] = resolved ?: ''
             }
+            mapped
         }
-        result
     }
 }
 
