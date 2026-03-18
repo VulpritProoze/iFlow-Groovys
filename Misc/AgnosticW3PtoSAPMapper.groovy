@@ -27,17 +27,24 @@ class Constants {
     static final String W3P_CRED = "[W3P_CRED]"
     static final String W3P_URL = "[W3P_URL]"
     static final String STEP_NAME = "W3PtoSAP_[StepName]"
+    
     /**
      * Mapping configuration
      * - Keys are target field names.
-     * - Values are source expressions. Supported expression forms:
-     *     1) "RESPONSE_KEY.field" -> takes the first record's `field` from the response with key `RESPONSE_KEY`.
-     *     2) "fieldName" -> when processing a single set of records, uses the current record's element `fieldName`.
-     *     3) Concatenation with `+`: e.g. "GET_ITEM1.fitemcode + GET_ITEM2.fitemcode" will concatenate both resolved values.
-     *     4) Literal strings: wrap in single or double quotes inside the expression, e.g. "'PRE-' + GET_ITEM1.fitemcode".
+     * - Values are source expressions. Supported expression forms and behaviour:
+     *     1) `RESPONSE_KEY.field` -> looks up `field` from the response identified by `RESPONSE_KEY`.
+     *        When the mapper emits one object per source record it will prefer the per-index record; otherwise the first record is used.
+     *     2) `fieldName` -> resolves against the current record when mapping record-by-record.
+     *     3) Numeric / arithmetic: supports `+`, `-`, `*`, and `/` with operator precedence (`*` and `/` before `+` and `-`).
+     *        `+` performs numeric addition when both operands are numeric; otherwise it concatenates as strings.
+     *     4) Literal strings: use single or double quotes, e.g. `'PRE-' + GET_ITEM1.fitemcode`.
+     *
      * Notes:
-     * - When multiple `<record>` nodes are present in a response, the mapper defaults to the first record for `RESPONSE_KEY.field` lookups.
-     * - If a reference cannot be resolved it falls back to an empty string.
+     * - `extractMappedRecords` returns a Result map: `[status:1|0, message:'...', payload: [...]]`.
+     *   On mapping errors (non-numeric operand for `*`/`/`/`-`, division by zero, malformed expressions) the function returns
+     *   `status: 0` with a descriptive `message` and an empty `payload`.
+     * - Missing fields or unresolved references evaluate to an empty string by default.
+     * - Custom transformation functions can be provided via `CUSTOM_RULES` and are applied to resolved values.
      */
     static final Map MAPPING = [:]
     static final Map CUSTOM_RULES = [:]
@@ -68,13 +75,25 @@ def Message processData(Message message) {
     }
 
     try {
-        // 1. Map data
-        def mappedRecords = extractMappedRecords(
+        // 1. Map data -> returns a Result map: [status:1|0, message: '', payload: [...]]
+        def result = extractMappedRecords(
             payload, 
             Constants.MAPPING, 
             Constants.CUSTOM_RULES
         )
-        
+
+        if (!(result instanceof Map)) {
+            logger.logBoth(new LogRequest(stepName: "MAPPING_FAILURE", title: Constants.LOG_RECID, status: "ERROR", inputPayload: payload, outputPayload: "Mapper returned unexpected type"))
+            return message
+        }
+
+        if (result.status != 1) {
+            logger.logBoth(new LogRequest(stepName: "MAPPING_ERROR", title: Constants.LOG_RECID, status: "ERROR", inputPayload: payload, outputPayload: result.message ?: 'Mapping failed'))
+            return message
+        }
+
+        def mappedRecords = result.payload ?: []
+
         if (mappedRecords.isEmpty() && payload.trim().startsWith("<")) {
             logger.logBoth(new LogRequest(stepName: "MAPPING_NO_RECORDS", title: Constants.LOG_RECID, status: "ERROR", inputPayload: payload, outputPayload: "No records found or failed to parse XML <Result>."))
             return message // Premature return instead of exception
@@ -114,7 +133,7 @@ def Message processData(Message message) {
  * Dynamically handles both XML (SOAP) and JSON data formats.
  */
 def extractMappedRecords(String payload, Map mapping, Map customRules = [:]) {
-    if (!payload) return []
+    if (!payload) return [status: 0, message: 'Empty payload', payload: []]
     payload = payload.toString()
 
     // Helper: safe XmlSlurper factory
@@ -142,7 +161,8 @@ def extractMappedRecords(String payload, Map mapping, Map customRules = [:]) {
     }
 
     // Resolve a single token (either RESPONSE.field or a plain field or literal)
-    def resolveToken = { String token, Map responsesMap, Map currentRecord = null ->
+    // idx: optional index into response records when producing per-record mapped outputs
+    def resolveToken = { String token, Map responsesMap, Map currentRecord = null, Integer idx = null ->
         if (!token) return ''
         token = token.trim()
         // literal quoted string
@@ -155,7 +175,15 @@ def extractMappedRecords(String payload, Map mapping, Map customRules = [:]) {
         if (m.matches()) {
             def rkey = m[0][1]
             def fname = m[0][2]
-            def rv = responsesMap[rkey]?.first?.get(fname)
+            def entry = responsesMap[rkey]
+            if (!entry) return ''
+            // If an index is provided and the response has multiple records, prefer the indexed record
+            if (idx != null && entry.records && entry.records.size() > idx) {
+                def val = entry.records[idx]?.get(fname)
+                if (val != null && val.toString() != '') return val
+            }
+            // fall back to the first record
+            def rv = entry.first?.get(fname)
             return rv ?: ''
         }
 
@@ -168,14 +196,124 @@ def extractMappedRecords(String payload, Map mapping, Map customRules = [:]) {
         return token
     }
 
-    // Resolve an expression possibly containing '+' concatenations
-    def resolveExpression = { String expr, Map responsesMap, Map currentRecord = null ->
+    // Numeric helper: try convert to BigDecimal, return null on failure
+    def toBigDecimal = { val ->
+        if (val == null) return null
+        if (val instanceof Number) return new BigDecimal(val.toString())
+        try {
+            def s = val.toString().trim()
+            if (s == '') return null
+            return new BigDecimal(s)
+        } catch (Exception e) {
+            return null
+        }
+    }
+
+    // Tokenize expression into numbers, quoted strings, identifiers, and operators
+    def tokenizeExpr = { String expr ->
+        if (!expr) return []
+        def pattern = /'[^']*'|"[^"]*"|\d+(?:\.\d+)?|[A-Za-z0-9_\[\]=\.]+|[()+\-\*\/]/
+        def m = expr =~ pattern
+        def tokens = []
+        while (m.find()) { tokens << m.group().trim() }
+        return tokens
+    }
+
+    // Resolve an expression supporting +, -, *, / with precedence. '+' behaves as concat when any operand is non-numeric.
+    // Throws IllegalArgumentException on invalid numeric usage (e.g. '*' on non-numeric fields).
+    def resolveExpression = { String expr, Map responsesMap, Map currentRecord = null, Integer idx = null ->
         if (expr == null) return ''
         if (!(expr instanceof String)) return expr.toString()
-        def parts = expr.split(/\s*\+\s*/)
-        def sb = new StringBuilder()
-        parts.each { part -> sb.append(resolveToken(part, responsesMap, currentRecord)) }
-        return sb.toString()
+        expr = expr.trim()
+        if (expr == '') return ''
+
+        def tokens = tokenizeExpr(expr)
+        if (!tokens) return ''
+
+        // Helper to get runtime value for a token (using resolveToken closure above)
+        def resolveOperand = { String tok ->
+            if (tok == null) return ''
+            return resolveToken(tok, responsesMap, currentRecord, idx)
+        }
+
+        // First pass: handle * and /
+        def tlist = tokens.collect { it }
+        int j = 0
+        while (j < tlist.size()) {
+            def tk = tlist[j]
+            if (tk == '*' || tk == '/') {
+                if (j == 0 || j == tlist.size() - 1) throw new IllegalArgumentException("Invalid expression: ${expr}")
+                def leftTok = tlist[j - 1]
+                def rightTok = tlist[j + 1]
+                def leftVal = resolveOperand(leftTok)
+                def rightVal = resolveOperand(rightTok)
+                def leftNum = toBigDecimal(leftVal)
+                def rightNum = toBigDecimal(rightVal)
+                if (leftNum == null || rightNum == null) {
+                    throw new IllegalArgumentException("Expression '${expr}': operator '${tk}' requires numeric operands (left='${leftVal}', right='${rightVal}')")
+                }
+                if (tk == '/' && rightNum.compareTo(BigDecimal.ZERO) == 0) {
+                    throw new IllegalArgumentException("Expression '${expr}': division by zero (left='${leftVal}', right='${rightVal}')")
+                }
+                def resNum = (tk == '*') ? leftNum.multiply(rightNum) : leftNum.divide(rightNum, 10, BigDecimal.ROUND_HALF_UP)
+                def resStr = resNum.stripTrailingZeros().toPlainString()
+                // replace left,op,right with result
+                tlist[j - 1] = resStr
+                tlist.remove(j + 1)
+                tlist.remove(j)
+                j = Math.max(j - 1, 0)
+            } else {
+                j++
+            }
+        }
+
+        // Second pass: handle + and - (left to right). + is numeric add when both numeric, else concatenation
+        int i = 0
+        while (i < tlist.size()) {
+            def tk = tlist[i]
+            if (tk == '+' || tk == '-') {
+                if (i == 0 || i == tlist.size() - 1) throw new IllegalArgumentException("Invalid expression: ${expr}")
+                def leftTok = tlist[i - 1]
+                def rightTok = tlist[i + 1]
+                def leftVal = resolveOperand(leftTok)
+                def rightVal = resolveOperand(rightTok)
+                def leftNum = toBigDecimal(leftVal)
+                def rightNum = toBigDecimal(rightVal)
+                def resStr
+                if (tk == '+') {
+                    if (leftNum != null && rightNum != null) {
+                        def sum = leftNum.add(rightNum)
+                        resStr = sum.stripTrailingZeros().toPlainString()
+                    } else {
+                        // string concatenation
+                        resStr = (leftVal == null ? '' : leftVal.toString()) + (rightVal == null ? '' : rightVal.toString())
+                    }
+                } else {
+                    // '-' requires numeric
+                    if (leftNum == null || rightNum == null) {
+                        throw new IllegalArgumentException("Expression '${expr}': operator '-' requires numeric operands (left='${leftVal}', right='${rightVal}')")
+                    }
+                    def diff = leftNum.subtract(rightNum)
+                    resStr = diff.stripTrailingZeros().toPlainString()
+                }
+                tlist[i - 1] = resStr
+                tlist.remove(i + 1)
+                tlist.remove(i)
+                i = Math.max(i - 1, 0)
+            } else {
+                i++
+            }
+        }
+
+        // Final token: resolve and return
+        def finalTok = tlist.size() ? tlist[0] : ''
+        if (finalTok == null) return ''
+        // If it's a quoted literal, strip quotes
+        if ((finalTok.startsWith("'") && finalTok.endsWith("'")) || (finalTok.startsWith('"') && finalTok.endsWith('"'))) {
+            return finalTok.substring(1, finalTok.length() - 1)
+        }
+        // Otherwise resolve via resolveToken to get runtime value (handles RESPONSE.field and currentRecord)
+        return resolveToken(finalTok, responsesMap, currentRecord, idx) ?: ''
     }
 
     // Parse XML payload
@@ -218,13 +356,42 @@ def extractMappedRecords(String payload, Map mapping, Map customRules = [:]) {
                 responsesMap[rkey] = entry
             }
 
-            // Build a single mapped result from Constants.MAPPING using responsesMap
-            def mapped = [:]
-            mapping.each { target, sourceSpec ->
-                def resolved = resolveExpression(sourceSpec?.toString(), responsesMap, null)
-                if (customRules.containsKey(target)) mapped[target] = customRules[target](resolved) else mapped[target] = resolved ?: ''
+            // Decide whether to produce one mapped result per record
+            int maxRecords = 0
+            responsesMap.each { k, v -> if (v.records) maxRecords = Math.max(maxRecords, v.records.size()) }
+
+            if (maxRecords <= 1) {
+                // Single-result behavior (backwards compatible)
+                try {
+                    def mapped = [:]
+                    mapping.each { target, sourceSpec ->
+                        def resolved = resolveExpression(sourceSpec?.toString(), responsesMap, null, null)
+                        if (customRules.containsKey(target)) mapped[target] = customRules[target](resolved) else mapped[target] = resolved ?: ''
+                    }
+                    return [status: 1, message: 'OK', payload: [mapped]]
+                } catch (IllegalArgumentException e) {
+                    return [status: 0, message: "Mapping error: ${e.message}", payload: []]
+                }
             }
-            return [mapped]
+
+            // Multi-record behavior: build one mapped object per index (align by position)
+            try {
+                def results = []
+                def singleKey = (responsesMap.keySet().size() == 1) ? responsesMap.keySet().iterator().next() : null
+                for (int i = 0; i < maxRecords; i++) {
+                    Map currentRecord = null
+                    if (singleKey) currentRecord = (responsesMap[singleKey].records && responsesMap[singleKey].records.size() > i) ? responsesMap[singleKey].records[i] : [:]
+                    def mapped = [:]
+                    mapping.each { target, sourceSpec ->
+                        def resolved = resolveExpression(sourceSpec?.toString(), responsesMap, currentRecord, i)
+                        if (customRules.containsKey(target)) mapped[target] = customRules[target](resolved) else mapped[target] = resolved ?: ''
+                    }
+                    results << mapped
+                }
+                return [status: 1, message: 'OK', payload: results]
+            } catch (IllegalArgumentException e) {
+                return [status: 0, message: "Mapping error: ${e.message}", payload: []]
+            }
         }
 
         // Not a <responses> wrapper: parse as existing SOAP->Result->innerXml flow
@@ -234,8 +401,27 @@ def extractMappedRecords(String payload, Map mapping, Map customRules = [:]) {
             def root = envelope
             def rawRecords = []
             try { rawRecords = root.data.record.collect { it } } catch (e) { rawRecords = [] }
-            return rawRecords.collect { rec ->
-                def recMap = (rec instanceof GPathResult) ? recordToMap(rec) : (rec instanceof Map ? rec : [value: rec.toString()])
+            try {
+                def mappedList = rawRecords.collect { rec ->
+                    def recMap = (rec instanceof GPathResult) ? recordToMap(rec) : (rec instanceof Map ? rec : [value: rec.toString()])
+                    def mapped = [:]
+                    mapping.each { target, sourceSpec ->
+                        def resolved = resolveExpression(sourceSpec?.toString(), [:], recMap)
+                        if (customRules.containsKey(target)) mapped[target] = customRules[target](resolved) else mapped[target] = resolved ?: ''
+                    }
+                    mapped
+                }
+                return [status: 1, message: 'OK', payload: mappedList]
+            } catch (IllegalArgumentException e) {
+                return [status: 0, message: "Mapping error: ${e.message}", payload: []]
+            }
+        }
+
+        try {
+            def innerRoot = newSafeSlurper().parseText(innerXml)
+            def gRecords = innerRoot.data.record
+            def mappedList = gRecords.collect { rec ->
+                def recMap = recordToMap(rec)
                 def mapped = [:]
                 mapping.each { target, sourceSpec ->
                     def resolved = resolveExpression(sourceSpec?.toString(), [:], recMap)
@@ -243,18 +429,9 @@ def extractMappedRecords(String payload, Map mapping, Map customRules = [:]) {
                 }
                 mapped
             }
-        }
-
-        def innerRoot = newSafeSlurper().parseText(innerXml)
-        def gRecords = innerRoot.data.record
-        return gRecords.collect { rec ->
-            def recMap = recordToMap(rec)
-            def mapped = [:]
-            mapping.each { target, sourceSpec ->
-                def resolved = resolveExpression(sourceSpec?.toString(), [:], recMap)
-                if (customRules.containsKey(target)) mapped[target] = customRules[target](resolved) else mapped[target] = resolved ?: ''
-            }
-            mapped
+            return [status: 1, message: 'OK', payload: mappedList]
+        } catch (IllegalArgumentException e) {
+            return [status: 0, message: "Mapping error: ${e.message}", payload: []]
         }
     } else {
         // JSON path (unchanged)
@@ -273,14 +450,19 @@ def extractMappedRecords(String payload, Map mapping, Map customRules = [:]) {
             records = [root]
         }
 
-        return records.collect { record ->
-            def recMap = (record instanceof Map) ? record : record
-            def mapped = [:]
-            mapping.each { target, sourceSpec ->
-                def resolved = resolveExpression(sourceSpec?.toString(), [:], recMap)
-                if (customRules.containsKey(target)) mapped[target] = customRules[target](resolved) else mapped[target] = resolved ?: ''
+        try {
+            def mappedList = records.collect { record ->
+                def recMap = (record instanceof Map) ? record : record
+                def mapped = [:]
+                mapping.each { target, sourceSpec ->
+                    def resolved = resolveExpression(sourceSpec?.toString(), [:], recMap)
+                    if (customRules.containsKey(target)) mapped[target] = customRules[target](resolved) else mapped[target] = resolved ?: ''
+                }
+                mapped
             }
-            mapped
+            return [status: 1, message: 'OK', payload: mappedList]
+        } catch (IllegalArgumentException e) {
+            return [status: 0, message: "Mapping error: ${e.message}", payload: []]
         }
     }
 }
