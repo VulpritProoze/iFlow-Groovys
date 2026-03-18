@@ -1,5 +1,5 @@
 /**
- * W3P_GetUOM.groovy
+ * W3P_GetProduct.groovy
  * 
  * Dependencies:
  * - Misc/LoggerService.groovy (Standalone implementation appended below)
@@ -31,8 +31,8 @@ import java.time.ZoneOffset
 
 
 class Constants {
-    static final String STEP_NAME = "W3P_GetUOM"
-    static final String ACTION = "GET_UOM"
+    static final String STEP_NAME = "W3P_GetProduct"
+    static final String ACTION = "GET_PRODUCT"
     static final String W3P_CRED = "[W3P_CRED]"
     static final String W3P_URL = "[W3P_URL]"
 

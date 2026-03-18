@@ -13,6 +13,7 @@ import java.net.URL
 import java.net.HttpURLConnection
 import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
+import groovy.xml.XmlUtil
 import javax.net.ssl.HttpsURLConnection
 import javax.net.ssl.SSLContext
 import javax.net.ssl.TrustManager
@@ -116,6 +117,147 @@ class HTTPSOAPConnection {
             }
         } catch (Exception e) {
             return [status: -1, message: "SOAP exception: ${e.message}"]
+        }
+    }
+
+    /**
+     * Note: This endpoint is only for 'GET_' endpoints in W3P'.
+     * Posts the initial request, then repeatedly posts with the `flast_key` filter set to
+     * the last seen `flast_key` value. Collects all `<record>` nodes from each page and
+     * returns a single well-formed XML payload containing all records and the four
+     * control keys (`fnew_batchid`, `flast_batchid`, `flast_key`, `fdone`) taken from
+     * the last page fetched.
+     */
+    public def postAllPagination(SOAPRequestBody baseRequest) {
+        try {
+            if (!baseRequest) {
+                return [status: 0, message: "postAllPagination: baseRequest is required"]
+            }
+            if (!baseRequest.action || !(baseRequest.action instanceof String) || !baseRequest.action.contains('GET_')) {
+                return [status: 0, message: "postAllPagination: baseRequest.action must contain 'GET_' (only GET_ endpoints supported)"]
+            }
+            // Prepare a mutable copy of the request so we can append pagination filters
+            SOAPRequestBody request = new SOAPRequestBody()
+            request.action = baseRequest.action
+            request.record = baseRequest.record
+            request.customEnvelope = baseRequest.customEnvelope
+            request.requestProperty = baseRequest.requestProperty ?: ['Content-Type': 'application/xml']
+            request.filters = baseRequest.filters ? new HashMap(baseRequest.filters) : [:]
+
+            // Helper: parse XML using a secure SAX parser (best-effort to disable external entities)
+            def parseSafe = { String xmlStr ->
+                def spf = javax.xml.parsers.SAXParserFactory.newInstance()
+                try {
+                    spf.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true)
+                    spf.setFeature("http://xml.org/sax/features/external-general-entities", false)
+                    spf.setFeature("http://xml.org/sax/features/external-parameter-entities", false)
+                } catch (Exception se) {
+                    // feature not supported - continue with best-effort parser
+                }
+                spf.setXIncludeAware(false)
+                spf.setNamespaceAware(false)
+                def parser = spf.newSAXParser()
+                def reader = parser.getXMLReader()
+                return new XmlSlurper(reader).parseText(xmlStr)
+            }
+
+            List<String> allRecordFragments = []
+            List<String> pageResults = []
+            String finalFnewBatchid = ""
+            String finalFlastBatchid = ""
+            String finalFlastKey = ""
+            String finalFdone = "0"
+
+            while (true) {
+                def resp = this.post(request)
+                if (resp.status != 1) {
+                    return [status: -1, message: "postAllPagination: POST failed: ${resp.message}", lastResponse: resp]
+                }
+
+                def payload = resp.payload ?: ""
+                if (!payload) {
+                    return [status: -1, message: "postAllPagination: empty payload"]
+                }
+
+                // SOAP wrapper -> extract Result element text (which itself contains escaped XML)
+                def soapParsed = parseSafe(payload)
+                def resultNode = soapParsed.'**'.find { it.name() == 'Result' }
+                def resultText = resultNode?.text()
+                if (!resultText) {
+                    return [status: -1, message: "postAllPagination: Result element not found in SOAP response", payload: payload]
+                }
+
+                pageResults << resultText
+
+                // parse inner page XML
+                def pageParsed = parseSafe(resultText)
+
+                // extract pagination control keys
+                finalFnewBatchid = pageParsed.data.fnew_batchid?.text() ?: finalFnewBatchid
+                finalFlastBatchid = pageParsed.data.flast_batchid?.text() ?: finalFlastBatchid
+                finalFlastKey = pageParsed.data.flast_key?.text() ?: finalFlastKey
+                finalFdone = pageParsed.data.fdone?.text() ?: finalFdone
+
+                // collect records
+                pageParsed.data.record.each { rec ->
+                    String recXml = XmlUtil.serialize(rec)
+                    recXml = recXml.replaceFirst(/<\?xml.*?\?>\s*/, '')
+                    allRecordFragments << recXml
+                }
+
+                // stop condition
+                if (finalFdone == '1' || finalFdone?.toLowerCase() == 'true') {
+                    break
+                }
+
+                // prepare next iteration: set flast_key to last seen flast_key
+                request.filters = request.filters ?: [:]
+                request.filters['flast_key'] = finalFlastKey
+            }
+
+            // Build finalResponse: if no records were collected, return concatenated page results as fallback
+            String finalResponse
+            if (allRecordFragments.size() == 0) {
+                finalResponse = pageResults.join('\n')
+            } else {
+                def writer = new StringWriter()
+                def mb = new groovy.xml.MarkupBuilder(writer)
+                mb.mkp.xmlDeclaration(version: '1.0', encoding: 'utf-8')
+                mb.root {
+                    data {
+                        fnew_batchid(finalFnewBatchid)
+                        flast_batchid(finalFlastBatchid)
+                        flast_key(finalFlastKey)
+                        fdone(finalFdone)
+                        allRecordFragments.each { r ->
+                            mkp.yieldUnescaped(r)
+                        }
+                    }
+                }
+                finalResponse = writer.toString()
+            }
+
+            // Escape the inner XML and wrap it in the SOAP envelope/Result structure
+            def escapeXmlForResult = { String s ->
+                if (s == null) return ''
+                // escape ampersand first
+                s = s.replace('&', '&amp;')
+                s = s.replace('<', '&lt;')
+                s = s.replace('>', '&gt;')
+                return s
+            }
+
+            String escapedInner = escapeXmlForResult(finalResponse)
+
+            String soapWrapped = '<?xml version="1.0" encoding="UTF-8"?>' +
+                '<SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/" xmlns:ns1="urn:localhost-main" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:SOAP-ENC="http://schemas.xmlsoap.org/soap/encoding/" SOAP-ENV:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">' +
+                '<SOAP-ENV:Body><ns1:callResponse><Result xsi:type="xsd:string">' +
+                escapedInner +
+                '</Result></ns1:callResponse></SOAP-ENV:Body></SOAP-ENV:Envelope>'
+
+            return [status: 1, message: 'Success', payload: soapWrapped]
+        } catch (Exception e) {
+            return [status: -1, message: "postAllPagination error: ${e.message}"]
         }
     }
 

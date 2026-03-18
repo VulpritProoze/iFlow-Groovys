@@ -1,13 +1,5 @@
 /**
  * AppendCustomXmlResponse.groovy
- * Helper utilities to build and append XML response fragments into the current
- * iFlow `message` body. These helpers are library functions (no processData).
- *
- * Two exported functions:
- *  - appendCustomXmlResponseToBody(message, uniqueId, xmlResponse)
- *      -> appends the built <response> into a top-level <responses> root in the
- *         message body, sets message property `W3P_Key` to uniqueId and returns
- *         a result Map similar to buildCustomXmlResponse.
  *
  * Behavior notes:
  * - Response XML is preserved inside a CDATA in the <value> element.
@@ -19,6 +11,7 @@
  *   - Empty body => creates <responses> with a single <response> element.
  * - Functions never throw; errors return a result map with status 0.
  */
+ 
 
 import groovy.json.JsonOutput
 
@@ -34,13 +27,18 @@ def appendCustomXmlResponseToBody(def msg, String uniqueId, String xmlResponse) 
             return [status: 0, message: 'appendCustomXmlResponseToBody: message is required', payload: null]
         }
 
-        def buildRes = buildCustomXmlResponse(uniqueId, xmlResponse)
-        if (buildRes.status != 1) {
-            return [status: 0, message: "Failed to build response: ${buildRes.message}", payload: buildRes.payload]
-        }
-
-        String element = buildRes.payload.toString()
+        // Inline the previous buildCustomXmlResponse helper here so this file is self-contained.
         String uid = uniqueId ?: java.util.UUID.randomUUID().toString()
+        def xml = xmlResponse ?: ''
+        // Strip optional XML declaration
+        String xmlNoDecl = xml.replaceFirst(/^\s*<\?xml.*?\?>\s*/, '')
+        // Ensure CDATA safety by splitting any closing CDATA sequences
+        String safeXml = xmlNoDecl.replace(']]>', ']]]]><![CDATA[>')
+        // Escape the key
+        String escUid = uid.toString().replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;').replace("'", '&apos;')
+        String element = "<response><key>${escUid}</key><value><![CDATA[${safeXml}]]></value></response>"
+        // NOTE: Do NOT set message properties or headers for sensitive keys.
+        // The unique id is included inside the generated <response> element only.
 
         String current = msg.getBody(java.lang.String) ?: ''
 
@@ -56,10 +54,11 @@ def appendCustomXmlResponseToBody(def msg, String uniqueId, String xmlResponse) 
             }
 
             // Wrap existing body as the first <response>
-            String existingNoDecl = stripXmlDeclaration(current)
+            String existingNoDecl = current.replaceFirst(/^\s*<\?xml.*?\?>\s*/, '')
             String safeExisting = existingNoDecl.replace(']]>', ']]]]><![CDATA[>')
             String existingKey = msg.getProperty('W3P_Key') ?: 'existing'
-            String firstResponse = "<response><key>${escapeXml(existingKey)}</key><value><![CDATA[${safeExisting}]]></value></response>"
+            String escExistingKey = existingKey?.toString().replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;').replace("'", '&apos;')
+            String firstResponse = "<response><key>${escExistingKey}</key><value><![CDATA[${safeExisting}]]></value></response>"
             String newBody = "<responses>${firstResponse}${element}</responses>"
             msg.setBody(newBody)
             return [status: 1, message: 'Wrapped existing body and appended new response', payload: newBody]
@@ -73,20 +72,3 @@ def appendCustomXmlResponseToBody(def msg, String uniqueId, String xmlResponse) 
         return [status: 0, message: "appendCustomXmlResponseToBody error: ${e.message}", payload: e?.stackTrace?.take(5)?.collect{ it.toString() }]
     }
 }
-
-private String stripXmlDeclaration(String s) {
-    if (!s) return ''
-    return s.replaceFirst(/^\s*<\?xml.*?\?>\s*/, '')
-}
-
-private String escapeXml(String s) {
-    if (s == null) return ''
-    return s.toString().replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;').replace("'", '&apos;')
-}
-
-/* Example usage:
-   def responseXml = soapResult.payload?.toString() ?: ''
-   def uid = java.util.UUID.randomUUID().toString()
-   def res = appendCustomXmlResponseToBody(message, uid, responseXml)
-   // check res.status and proceed
-*/

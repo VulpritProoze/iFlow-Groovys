@@ -31,8 +31,6 @@ class Constants {
         "WarehouseCode"   : "fsiteid",
         "WarehouseName"   : "fname",
         "Inactive"        : "factive_flag",
-        "U_fupdated_date" : "fupdated_date",
-        "Street"          : "fmemo"
     ]
     static final Map CUSTOM_RULES = [
         "Inactive": { val -> (val == "0" || val == "tYES") ? "tYES" : "tNO" }
