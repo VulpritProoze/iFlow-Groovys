@@ -25,7 +25,7 @@ import java.net.HttpURLConnection
 class Constants {
     static final String LOGIN_CREDENTIALS = "[SL_LOGIN_CRED]" 
     static final String COMPANY_CREDENTIALS = "[SL_COMPANY_CRED]" 
-    static final String BASE_URL = "[SL_BaseUrl]" 
+    static final String BASE_URL_CREDENTIALS = "[SL_BASEURL_CRED]" 
     static final String SESSION_VAR = "B1SESSION"
     static final String SESSION_VAR_PROP_NAME = "[SL_Session]"
     static final String BASE_URL_PROP_NAME = "[SL_BaseURL]"
@@ -161,7 +161,7 @@ private Map extractSLCredentialsFromSecureStore(SecureStoreService service) {
     try {
         def userCreds = getSecureCredential(service, Constants.LOGIN_CREDENTIALS)
         def companyCreds = getSecureCredential(service, Constants.COMPANY_CREDENTIALS)
-        def urlCreds = getSecureCredential(service, Constants.BASE_URL)
+        def urlCreds = getSecureCredential(service, Constants.BASE_URL_CREDENTIALS)
 
         return [
             status: 1,
