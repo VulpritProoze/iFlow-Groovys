@@ -4,6 +4,8 @@
  * Dependencies:
  * - Misc/Mapper.groovy (Logic refactored and appended below)
  * - Misc/LoggerService.groovy (Logic refactored and appended below)
+ * - Misc/ODataConnection.groovy
+ * - Misc/SOAPConnection.groovy
  */
 import com.sap.gateway.ip.core.customdev.util.Message;
 import groovy.util.XmlSlurper;
@@ -23,39 +25,76 @@ import javax.net.ssl.HostnameVerifier
 import javax.net.ssl.SSLSession
 import java.security.cert.X509Certificate
 
+
+
 class Constants {
     static final String W3P_CRED = "[W3P_CRED]"
     static final String W3P_URL = "[W3P_URL]"
     static final String STEP_NAME = "W3PtoSAP_MapUOM"
 
     /**
-     * Mapping configuration
-     * - Keys are target field names.
-     * - Values are source expressions. Supported expression forms and behaviour:
-     *     1) `RESPONSE_KEY.field` -> looks up `field` from the response identified by `RESPONSE_KEY`.
-     *        When the mapper emits one object per source record it will prefer the per-index record; otherwise the first record is used.
-     *     2) `fieldName` -> resolves against the current record when mapping record-by-record.
-     *     3) Numeric / arithmetic: supports `+`, `-`, `*`, and `/` with operator precedence (`*` and `/` before `+` and `-`).
-     *        `+` performs numeric addition when both operands are numeric; otherwise it concatenates as strings.
-     *     4) Literal strings: use single or double quotes, e.g. `'PRE-' + GET_ITEM1.fitemcode`.
+     * QUICK NOTE: Mapping Constants here are intended for mappings that do not require
+     * complex orchestration by default. For more complex scenarios see the Remarks below.
+     *
+     * Mapping configuration for transforming source records into target objects.
+     *
+     * Capabilities:
+     * - Simple flat mappings: map target field -> source token (e.g. ["Code":"fuomid","Name":"fname"]).
+     * - Nested mappings: Map values produce nested objects recursively.
+     * - Lists: List values produce arrays of resolved items.
+     * - Closures: dynamic generators with signature { responsesMap, currentRecord, idx -> ... }.
+     * - Expressions: string expressions supporting +, -, *, / with operator precedence.
+     *   - Use RESPONSE.field to reference other response sets (for example: "GET_WAREHOUSE.fsiteid").
+     *   - Use quoted literals 'text' or "text".
+     *   - '+' will concatenate when operands are non-numeric, otherwise perform numeric addition.
+     * - Custom rules: use `Constants.CUSTOM_RULES` to register per-path transformation closures.
+     *
+     * Examples:
+     * static final Map MAPPING = [
+     *   "Code": "fuomid",                     // simple field mapping
+     *   "Name": "fname",                      // simple field mapping
+     *   "Dimensions": [                         // nested object
+     *       "Height": "h",
+     *       "Width": "w"
+     *   ],
+     *   "Tags": ["tag1", "tag2"],           // static list
+     *   "DynamicList": { responses, rec, idx ->   // closure-based dynamic value
+     *       return [ A: rec.fname ?: '', B: responses.GET_X?.first?.value ?: '' ]
+     *   },
+     *   "Price": "unitPrice * quantity"       // arithmetic expression
+     * ]
      *
      * Notes:
-     * - `extractMappedRecords` returns a Result map: `[status:1|0, message:'...', payload: [...]]`.
-     *   On mapping errors (non-numeric operand for `*`/`/`/`-`, division by zero, malformed expressions) the function returns
-     *   `status: 0` with a descriptive `message` and an empty `payload`.
-     * - Missing fields or unresolved references evaluate to an empty string by default.
-     * - Custom transformation functions can be provided via `CUSTOM_RULES` and are applied to resolved values.
+     * - Expressions and RESPONSE lookups are resolved at runtime by the mapper.
+     * - Use `Constants.CUSTOM_RULES['Path.To.Field'] = { val -> ... }` to post-process resolved values.
+     *
+     * Remarks:
+     * - Multi-call mappings: this mapper file exposes both SOAP (`HTTPSOAPConnection`) and OData
+     *   (`HTTPODataConnection`) helpers. For complex mappings that need to call additional
+     *   APIs (e.g., enrich a record with multiple remote lookups) you can perform those calls
+     *   inside mapping `Closure`s or orchestrate them in a pre-processing step and place
+     *   the results into a `responses` map referenced via `RESPONSE.field` tokens.
+     *
+     * - SAP login / session handling: if a mapping or pre-processing step requires logging
+     *   into SAP, use the provided utilities (see
+     *   the `OData` / `SOAP` connection classes). In an iFlow, add a Content Modifier
+     *   before this mapping step to extract and store the SAP login token (or session) into
+     *   the process variable store; then the mapping code or closures can read that value
+     *   from the variable store or from the `responses` map to attach to downstream calls.
+     *
+     * - LoggerService.ExtractW3PCredentials is a private method. Use extractW3PCredentials() instead
      */
-    static final Map MAPPING = [
-        "Code"                : "GET_UOM.fuomid",
-        "Name"                : "GET_UOM.fname",
-    ]
+    static final Map MAPPING = [:]
     static final Map CUSTOM_RULES = [:]
 
     // Logging Constant/s
     static final String LOG_RECID = "W3P"
-}
 
+    // Uncomment these constants if logging in to SAP
+    // static final String SESSION_VAR_PROP_NAME = "[B1SESSION]"
+    // static final String BASE_URL_PROP_NAME = "[SL_BaseURL]"
+
+}
 
 /**
  * Agnostic Mapping Configuration.
@@ -79,44 +118,117 @@ def Message processData(Message message) {
     }
 
     try {
-        // 1. Map data -> returns a Result map: [status:1|0, message: '', payload: [...]]
-        def result = extractMappedRecords(
-            payload, 
-            Constants.MAPPING, 
-            Constants.CUSTOM_RULES
-        )
-
-        if (!(result instanceof Map)) {
-            logger.logBoth(new LogRequest(stepName: "MAPPING_FAILURE", title: Constants.LOG_RECID, status: "ERROR", inputPayload: payload, outputPayload: "Mapper returned unexpected type"))
+        // Parse SOAP -> Result -> innerXml flow
+        def sl = new XmlSlurper()
+        def envelope = sl.parseText(payload)
+        def innerXml = envelope.Body?.callResponse?.Result?.text() ?: envelope.'**'.find { it.name() == 'Result' }?.text()
+        if (!innerXml) {
+            logger.logBoth(new LogRequest(stepName: Constants.STEP_NAME, title: Constants.LOG_RECID, status: "ERROR", inputPayload: payload, outputPayload: "No <Result> found"))
             return message
         }
 
-        if (result.status != 1) {
-            logger.logBoth(new LogRequest(stepName: "MAPPING_ERROR", title: Constants.LOG_RECID, status: "ERROR", inputPayload: payload, outputPayload: result.message ?: 'Mapping failed'))
+        // simple unescape of common entities
+        def unescapeXml = { String s ->
+            if (s == null) return ''
+            s.replaceAll('&lt;', '<').replaceAll('&gt;', '>').replaceAll('&quot;', '"').replaceAll('&apos;', "'").replaceAll('&amp;', '&')
+        }
+
+        def inner = unescapeXml(innerXml)
+        def innerRoot = new XmlSlurper().parseText(inner)
+        def records = []
+        try { records = innerRoot.data.record } catch (e) { records = [] }
+
+        // Extract OData base URL and session using helper methods
+        def baseRes = extractBaseUrl(message)
+        def sessRes = extractSessionCookie(message)
+        if (baseRes.status != 1 || sessRes.status != 1) {
+            logger.logBoth(new LogRequest(stepName: Constants.STEP_NAME, title: Constants.LOG_RECID, status: "ERROR", inputPayload: payload, outputPayload: "Missing SL baseUrl or session: ${baseRes.message}, ${sessRes.message}"))
             return message
         }
+        def baseUrl = baseRes.payload
+        def sessionCookie = sessRes.payload
 
-        def mappedRecords = result.payload ?: []
+        def odata = new HTTPODataConnection(baseUrl).setSessionCookie(sessionCookie)
 
-        if (mappedRecords.isEmpty() && payload.trim().startsWith("<")) {
-            logger.logBoth(new LogRequest(stepName: "MAPPING_NO_RECORDS", title: Constants.LOG_RECID, status: "ERROR", inputPayload: payload, outputPayload: "No records found or failed to parse XML <Result>."))
-            return message // Premature return instead of exception
+        // Iterate records and create/patch UoM groups
+        records.each { rec ->
+            def fuomid = rec.fuomid.text()
+            def fname = rec.fname.text()
+            def baseUom = rec.fbase_uom.text()
+
+            // Build defList from <def> nodes
+            def defList = []
+            def uomDefs = rec.'def'
+            uomDefs.each { d ->
+                def fuom = d.fuom.text()
+                def fqty = d.fqty.text()
+                def baseQty = null
+                try { baseQty = new BigDecimal(fqty) } catch (ignored) { baseQty = 0 }
+                def altEntry = addUOM(fuom, message, odata)
+                defList << [
+                    AlternateUoM     : altEntry,
+                    BaseQuantity     : baseQty,
+                    AlternateQuantity: 1
+                ]
+            }
+
+            // ensure base UoM exists
+            def baseUomEntry = addUOM(baseUom, message, odata)
+            if (baseUomEntry == -1) {
+                logger.logBoth(new LogRequest(stepName: Constants.STEP_NAME, title: Constants.LOG_RECID, status: "ERROR", inputPayload: baseUom, outputPayload: "Failed to ensure base UoM"))
+                return message
+            }
+
+            // prepare payload for UoMGroup
+            def payloadMap = [
+                Code                         : fuomid,
+                Name                         : fname,
+                BaseUoM                      : baseUomEntry,
+                UoMGroupDefinitionCollection : defList
+            ]
+
+            // check existing group
+            def query = "UnitOfMeasurementGroups?\$filter=Code%20eq%20'${fuomid}'"
+            // note: HTTPODataConnection expects url without base; pass encoded filter
+            def getReq = [url: "UnitOfMeasurementGroups?\$filter=Code%20eq%20'${fuomid}'"]
+            // Use direct get via HTTPODataConnection
+            def getResp = odata.get(new ODataRequestBody(url: "UnitOfMeasurementGroups?\$filter=Code%20eq%20'${fuomid}'"))
+            if (getResp.status != 1) {
+                logger.logBoth(new LogRequest(stepName: Constants.STEP_NAME, title: Constants.LOG_RECID, status: "ERROR", inputPayload: fuomid, outputPayload: "Failed to query UoM groups: ${getResp.message}"))
+                return message
+            }
+
+            try {
+                if (getResp.payload?.value && getResp.payload.value.size() > 0) {
+                    def ugpEntry = getResp.payload.value[0].AbsEntry
+                    // patch (use helper to send PATCH)
+                    def patchPayload = [ Name: fname ]
+                    message.setProperty("ugpEntry", ugpEntry)
+                    message.setProperty("payload", patchPayload)
+                    message.setProperty("response", getResp.payload)
+                    def patchResp = odata.patch(new ODataRequestBody(url: "UnitOfMeasurementGroups(${ugpEntry})", payload: JsonOutput.toJson(patchPayload)))
+                    if (patchResp?.status != 1) {
+                        logger.logBoth(new LogRequest(stepName: Constants.STEP_NAME, title: Constants.LOG_RECID, status: "ERROR", inputPayload: patchPayload, outputPayload: "PATCH failed: ${patchResp.message}"))
+                        return message
+                    } else {
+                        logger.logBoth(new LogRequest(stepName: Constants.STEP_NAME, title: Constants.LOG_RECID, status: "OK", inputPayload: patchPayload, outputPayload: "Updated UoMGroup ${fuomid} (AbsEntry=${ugpEntry})"))
+                    }
+                } else {
+                    // create
+                    def postResp = odata.post(new ODataRequestBody(url: 'UnitOfMeasurementGroups', payload: JsonOutput.toJson(payloadMap)))
+                    if (postResp.status != 1) {
+                        logger.logBoth(new LogRequest(stepName: Constants.STEP_NAME, title: Constants.LOG_RECID, status: "ERROR", inputPayload: payloadMap, outputPayload: "POST failed: ${postResp.message}"))
+                        return message
+                    }
+                    else {
+                        logger.logBoth(new LogRequest(stepName: Constants.STEP_NAME, title: Constants.LOG_RECID, status: "OK", inputPayload: payloadMap, outputPayload: "Created UoMGroup ${fuomid}"))
+                    }
+                }
+            } catch (Exception e) {
+                logger.logBoth(new LogRequest(stepName: Constants.STEP_NAME, title: Constants.LOG_RECID, status: "ERROR", inputPayload: fuomid, outputPayload: "Exception: ${e.message}"))
+                return message
+            }
         }
-
-        // 2. Wrap it in a uniform JSON structure
-        def jsonResult = JsonOutput.toJson(mappedRecords)
-        
-        // 3. Log Success using logBoth and handle result
-        def logResult = logger.logBoth(new LogRequest(stepName: Constants.STEP_NAME, title: Constants.LOG_RECID, status: "OK", inputPayload: payload, outputPayload: JsonOutput.prettyPrint(jsonResult)))
-        
-        if (logResult.status != 1) {
-            // Log the logging failure using logBoth
-            logger.logBoth(new LogRequest(stepName: "PROCESS_LOG_FAILURE", title: Constants.LOG_RECID, status: "ERROR", inputPayload: payload, outputPayload: "LogProcess failed: ${logResult.message}"))
-        }
-        
-        // 4. Set the new JSON body back to the message
-        message.setBody(jsonResult)
-        
     } catch (Exception e) {
         // Log Error using logBoth
         def stackTrace = e.stackTrace.take(15).join('\n')
@@ -131,6 +243,63 @@ def Message processData(Message message) {
 }
 
 
+/**
+ * Ensure a UnitOfMeasurement exists. Uses provided HTTPODataConnection for calls.
+ * Returns AbsEntry (number) on success or -1 on failure.
+ */
+def addUOM(String fuom, Message message, HTTPODataConnection odata) {
+    if (!fuom) return -1
+    def logger = new LoggerService(messageLogFactory, message)
+
+    def filter = "UnitOfMeasurements?\$filter=Code%20eq%20'${fuom}'"
+    def resp = odata.get(new ODataRequestBody(url: filter))
+    if (resp?.status != 1) {
+        logger.logBoth(new LogRequest(stepName: Constants.STEP_NAME, title: Constants.LOG_RECID, status: "ERROR", inputPayload: fuom, outputPayload: "Failed to query UnitOfMeasurements: ${resp?.message}"))
+        return -1
+    }
+    if (resp.payload?.value && resp.payload.value.size() > 0) {
+        def existing = resp.payload.value[0].AbsEntry
+        logger.logBoth(new LogRequest(stepName: Constants.STEP_NAME, title: Constants.LOG_RECID, status: "OK", inputPayload: fuom, outputPayload: "Found existing UoM AbsEntry=${existing}"))
+        return existing
+    }
+
+    def payload = [Code: fuom, Name: fuom]
+    def postResp = odata.post(new ODataRequestBody(url: 'UnitOfMeasurements', payload: JsonOutput.toJson(payload)))
+    if (postResp?.status != 1) {
+        logger.logBoth(new LogRequest(stepName: Constants.STEP_NAME, title: Constants.LOG_RECID, status: "ERROR", inputPayload: payload, outputPayload: "Failed to create UoM: ${postResp?.message}"))
+        return -1
+    }
+    def newEntry = postResp.payload?.UomEntry ?: -1
+    logger.logBoth(new LogRequest(stepName: Constants.STEP_NAME, title: Constants.LOG_RECID, status: "OK", inputPayload: payload, outputPayload: "Created UoM ${fuom} AbsEntry=${newEntry}"))
+    return newEntry
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+// ================================
+// HELPERS
 
 /**
  * Agnostic Payload Processor (Refactored from Mapper.groovy)
@@ -320,6 +489,47 @@ def extractMappedRecords(String payload, Map mapping, Map customRules = [:]) {
         return resolveToken(finalTok, responsesMap, currentRecord, idx) ?: ''
     }
 
+        // Resolve a mapping specification which may be:
+        // - a String expression -> resolves via resolveExpression
+        // - a Map -> treated as a nested mapping (recurses)
+        // - a List -> each element resolved and returned as a list
+        // - a Closure -> dynamic constructor invoked as closure(responsesMap, currentRecord, idx)
+        // path: dot-delimited key path used to apply customRules (if provided)
+        def resolveMappingValue
+        resolveMappingValue = { def spec, Map responsesMap, Map currentRecord = null, Integer idx = null, String path = null ->
+            if (spec == null) return ''
+
+            if (spec instanceof Closure) {
+                try {
+                    return spec(responsesMap, currentRecord, idx)
+                } catch (e) {
+                    throw new IllegalArgumentException("Mapping closure for '${path ?: 'root'}' threw: ${e.message}")
+                }
+            }
+
+            // Nested map -> build nested object recursively
+            if (spec instanceof Map) {
+                def nested = [:]
+                spec.each { nk, nSpec ->
+                    def childPath = (path ? (path + '.' + nk) : nk.toString())
+                    nested[nk] = resolveMappingValue(nSpec, responsesMap, currentRecord, idx, childPath)
+                }
+                return nested
+            }
+
+            // List -> resolve each element
+            if (spec instanceof List) {
+                return spec.collect { item -> resolveMappingValue(item, responsesMap, currentRecord, idx, path) }
+            }
+
+            // Leaf: string/primitive -> resolve expression and apply customRules if any for full path
+            def resolved = resolveExpression(spec?.toString(), responsesMap, currentRecord, idx)
+            if (path != null && customRules.containsKey(path)) {
+                return customRules[path](resolved)
+            }
+            return resolved ?: ''
+        }
+
     // Parse XML payload
     if (payload.trim().startsWith('<')) {
         def sl = newSafeSlurper()
@@ -333,103 +543,53 @@ def extractMappedRecords(String payload, Map mapping, Map customRules = [:]) {
             responsesRoot = envelope.'**'.find { it.name() == 'responses' }
         }
 
-        if (responsesRoot) {
-            // Build responses map: key -> { records: [map], first: map }
-            def responsesMap = [:]
-            responsesRoot.response.each { resp ->
-                def rkey = resp.key?.text()?.trim()
-                if (!rkey) return
-                def respValue = resp.value?.text() ?: ''
-                def entry = [records: [], first: [:]]
-                try {
-                    if (respValue) {
-                        def valEnv = newSafeSlurper().parseText(respValue)
-                        def inner = valEnv.Body?.callResponse?.Result?.text() ?: valEnv.'**'.find { it.name() == 'Result' }?.text()
-                        if (inner) {
-                            def innerRoot = newSafeSlurper().parseText(inner)
-                            innerRoot.data.record.each { rec ->
-                                entry.records << recordToMap(rec)
-                            }
-                            entry.first = entry.records ? entry.records[0] : [:]
-                            entry.raw = inner
-                        }
-                    }
-                } catch (e) {
-                    // ignore parsing errors for this response
-                }
-                responsesMap[rkey] = entry
-            }
-
-            // Decide whether to produce one mapped result per record
-            int maxRecords = 0
-            responsesMap.each { k, v -> if (v.records) maxRecords = Math.max(maxRecords, v.records.size()) }
-
-            if (maxRecords <= 1) {
-                // Single-result behavior (backwards compatible)
-                try {
-                    def mapped = [:]
-                    mapping.each { target, sourceSpec ->
-                        def resolved = resolveExpression(sourceSpec?.toString(), responsesMap, null, null)
-                        if (customRules.containsKey(target)) mapped[target] = customRules[target](resolved) else mapped[target] = resolved ?: ''
-                    }
-                    return [status: 1, message: 'OK', payload: [mapped]]
-                } catch (IllegalArgumentException e) {
-                    return [status: 0, message: "Mapping error: ${e.message}", payload: []]
-                }
-            }
-
-            // Multi-record behavior: build one mapped object per index (align by position)
-            try {
-                def results = []
-                def singleKey = (responsesMap.keySet().size() == 1) ? responsesMap.keySet().iterator().next() : null
-                for (int i = 0; i < maxRecords; i++) {
-                    Map currentRecord = null
-                    if (singleKey) currentRecord = (responsesMap[singleKey].records && responsesMap[singleKey].records.size() > i) ? responsesMap[singleKey].records[i] : [:]
-                    def mapped = [:]
-                    mapping.each { target, sourceSpec ->
-                        def resolved = resolveExpression(sourceSpec?.toString(), responsesMap, currentRecord, i)
-                        if (customRules.containsKey(target)) mapped[target] = customRules[target](resolved) else mapped[target] = resolved ?: ''
-                    }
-                    results << mapped
-                }
-                return [status: 1, message: 'OK', payload: results]
-            } catch (IllegalArgumentException e) {
-                return [status: 0, message: "Mapping error: ${e.message}", payload: []]
-            }
-        }
-
-        // Not a <responses> wrapper: parse as existing SOAP->Result->innerXml flow
+        // Parse SOAP -> Result -> innerXml flow and map records directly from inner XML
         def innerXml = envelope.Body?.callResponse?.Result?.text() ?: envelope.'**'.find { it.name() == 'Result' }?.text()
-        if (!innerXml) {
-            // maybe direct data structure
-            def root = envelope
-            def rawRecords = []
-            try { rawRecords = root.data.record.collect { it } } catch (e) { rawRecords = [] }
+        if (innerXml) {
             try {
-                def mappedList = rawRecords.collect { rec ->
-                    def recMap = (rec instanceof GPathResult) ? recordToMap(rec) : (rec instanceof Map ? rec : [value: rec.toString()])
+                // Unescape common XML entities that were placed into the Result element
+                def unescapeXml = { String s ->
+                    if (s == null) return ''
+                    def x = s
+                    x = x.replaceAll('&lt;', '<')
+                    x = x.replaceAll('&gt;', '>')
+                    x = x.replaceAll('&quot;', '"')
+                    x = x.replaceAll('&apos;', "'")
+                    x = x.replaceAll('&amp;', '&')
+                    return x
+                }
+
+                def innerUnescaped = unescapeXml(innerXml)
+                def innerRoot = newSafeSlurper().parseText(innerUnescaped)
+                def gRecords = []
+                try { gRecords = innerRoot.data.record } catch (e) { gRecords = [] }
+
+                def mappedList = gRecords.collect { rec ->
+                    def recMap = recordToMap(rec)
                     def mapped = [:]
                     mapping.each { target, sourceSpec ->
-                        def resolved = resolveExpression(sourceSpec?.toString(), [:], recMap)
-                        if (customRules.containsKey(target)) mapped[target] = customRules[target](resolved) else mapped[target] = resolved ?: ''
+                        mapped[target] = resolveMappingValue(sourceSpec, [:], recMap, null, target)
                     }
                     mapped
                 }
                 return [status: 1, message: 'OK', payload: mappedList]
             } catch (IllegalArgumentException e) {
                 return [status: 0, message: "Mapping error: ${e.message}", payload: []]
+            } catch (Exception e) {
+                return [status: 0, message: "Failed to parse inner XML: ${e.message}", payload: []]
             }
         }
 
+        // No <Result> or failed to parse it: attempt to read records directly from the envelope
+        def root = envelope
+        def rawRecords = []
+        try { rawRecords = root.data.record.collect { it } } catch (e) { rawRecords = [] }
         try {
-            def innerRoot = newSafeSlurper().parseText(innerXml)
-            def gRecords = innerRoot.data.record
-            def mappedList = gRecords.collect { rec ->
-                def recMap = recordToMap(rec)
+            def mappedList = rawRecords.collect { rec ->
+                def recMap = (rec instanceof GPathResult) ? recordToMap(rec) : (rec instanceof Map ? rec : [value: rec.toString()])
                 def mapped = [:]
                 mapping.each { target, sourceSpec ->
-                    def resolved = resolveExpression(sourceSpec?.toString(), [:], recMap)
-                    if (customRules.containsKey(target)) mapped[target] = customRules[target](resolved) else mapped[target] = resolved ?: ''
+                    mapped[target] = resolveMappingValue(sourceSpec, [:], recMap, null, target)
                 }
                 mapped
             }
@@ -459,8 +619,7 @@ def extractMappedRecords(String payload, Map mapping, Map customRules = [:]) {
                 def recMap = (record instanceof Map) ? record : record
                 def mapped = [:]
                 mapping.each { target, sourceSpec ->
-                    def resolved = resolveExpression(sourceSpec?.toString(), [:], recMap)
-                    if (customRules.containsKey(target)) mapped[target] = customRules[target](resolved) else mapped[target] = resolved ?: ''
+                    mapped[target] = resolveMappingValue(sourceSpec, [:], recMap, null, target)
                 }
                 mapped
             }
@@ -895,3 +1054,465 @@ class HTTPSOAPConnection {
     }
 }
 
+/**
+ * ODataConnection.groovy
+ * 
+ * Dependencies:
+ * - None
+ */
+/*
+** Note that this is an HTTP Connection by default. For a more secure connection, please use HTTPS.
+** This is only intended for testing.
+*/
+
+/**
+ * Represents the configuration for an HTTP OData request.
+ * Acts as a Data Transfer Object (DTO) to consolidate URL, payload, and headers.
+ */
+class ODataRequestBody {
+
+    /*
+    **  The relative endpoint URL to be appended to the base URL 
+    **  Note: Add filters to the url if needed (e.g. /Items?$filter=ItemCode%20eq%20'i001')
+    */
+    String url
+    
+    /** String of payload to be sent as body */
+    String payload
+    
+    /** Request headers (defaults to application/json) */
+    Map<String, String> requestProperty = [
+        'Content-Type': 'application/json'
+    ]
+    
+    /** Whether to automatically append the session cookie to the request */
+    boolean isPassSession = true
+}
+
+
+class HTTPODataConnection {
+
+    private String sessionCookie
+    private String baseUrl
+    private Object responseBody
+
+    public HTTPODataConnection(String baseUrl) {
+        this.baseUrl = baseUrl
+    }
+
+    public def setSessionCookie(String cookie) {
+        this.sessionCookie = cookie
+        return this
+    }
+
+    public def setBaseUrl(String url) {
+        baseUrl = url
+        return this
+    }
+
+    /**
+     * Extracts the first element if the internal responseBody is a List, otherwise returns an empty Map.
+     * Updates the internal reference to allow chaining.
+     * @return the current instance for chaining.
+     */
+    public def parse() {
+        if (this.responseBody instanceof List && !this.responseBody.isEmpty()) {
+            this.responseBody = this.responseBody[0]
+        } else if (this.responseBody instanceof Map && this.responseBody.value instanceof List) {
+            this.responseBody = this.responseBody.value[0]
+        }
+        return this
+    }
+
+    /**
+     * Converts the current internal responseBody to a JSON string.
+     * @return A JSON formatted String.
+     */
+    public def toJson() {
+        if (!this.responseBody) return "{}"
+        return JsonOutput.toJson(this.responseBody)
+    }
+
+    /**
+     * Returns the raw response body.
+     */
+    public Object getBody() {
+        return this.responseBody
+    }
+
+    public HttpURLConnection connect(String url) {
+        if (url == null || url == '') {
+            return null
+        }
+
+        URL endpoint = new URL(baseUrl + url)
+        HttpURLConnection connection = (HttpURLConnection) endpoint.openConnection()
+
+        if (connection instanceof HttpsURLConnection) {
+            disableSSL()
+        }
+
+        return connection
+    }
+
+    /**
+     * Executes an HTTP GET request.
+     * @param request The configuration object containing the URL and headers.
+     * @return Result Map Structure.
+     */
+    public def get(ODataRequestBody request) {
+        try {
+            def con = connect(request.url)
+            if (con == null) {
+                return [status: -1, message: "Connection URL cannot be empty. Please set the baseUrl for this connection"]
+            }
+            con.setRequestMethod('GET')
+            for (prop in request.requestProperty) {
+                con.setRequestProperty(prop.key, prop.value)
+            }
+
+            if (request.isPassSession) {
+                if (!sessionCookie) {
+                    return [status: -1, message: "Missing sessionCookie for Connection"]
+                }
+                con.setRequestProperty('Cookie', sessionCookie)
+            }
+
+            if (request.payload) {
+                con.doOutput = true
+                con.outputStream.withCloseable { it << request.payload }
+            }
+
+            if (con.responseCode >= 200 && con.responseCode < 300) {
+                def result = new JsonSlurper().parse(con.inputStream.newReader())
+                return [status: 1, message: "Success", payload: result]
+            } else {
+                def errorText = con.errorStream?.text ?: "No error details provided"
+                return [status: -1, message: "GET failed. HTTP ${con.responseCode}: $errorText"]
+            }
+        } catch (Exception e) {
+            return [status: -1, message: "GET exception: ${e.message}"]
+        }
+    }
+
+    /**
+     * Executes an HTTP PUT request.
+     * @param request The configuration object containing the URL, payload, and headers.
+     * @return Result Map Structure.
+     */
+    public def put(ODataRequestBody request) {
+        try {
+            def con = connect(request.url)
+            if (con == null) {
+                return [status: -1, message: "Connection URL cannot be empty. Please set the baseUrl for this connection"]
+            }
+            con.setRequestMethod('PUT')
+            con.doOutput = true
+            for (prop in request.requestProperty) {
+                con.setRequestProperty(prop.key, prop.value)
+            }
+
+            if (request.isPassSession) {
+                if (!sessionCookie) {
+                    return [status: -1, message: "Missing sessionCookie for Connection"]
+                }
+                con.setRequestProperty('Cookie', sessionCookie)
+            }
+
+            if (request.payload) {
+                con.outputStream.withCloseable { it << request.payload }
+            }
+
+            if (con.responseCode >= 200 && con.responseCode < 300) {
+                def result = new JsonSlurper().parse(con.inputStream.newReader())
+                return [status: 1, message: "Success", payload: result]
+            } else {
+                def errorText = con.errorStream?.text ?: "No error details provided"
+                return [status: -1, message: "PUT failed. HTTP ${con.responseCode}: $errorText"]
+            }
+        } catch (Exception e) {
+            return [status: -1, message: "PUT exception: ${e.message}"]
+        }
+    }
+
+    /**
+     * Executes an HTTP PATCH request.
+     * @param request The configuration object containing the URL, payload, and headers.
+     * @return Result Map Structure.
+     */
+    public def patch(ODataRequestBody request) {
+        try {
+            def con = connect(request.url)
+            if (con == null) {
+                return [status: -1, message: "Connection URL cannot be empty. Please set the baseUrl for this connection"]
+            }
+            con.setRequestMethod('PATCH')
+            con.doOutput = true
+            for (prop in request.requestProperty) {
+                con.setRequestProperty(prop.key, prop.value)
+            }
+
+            if (request.isPassSession) {
+                if (!sessionCookie) {
+                    return [status: -1, message: "Missing sessionCookie for Connection"]
+                }
+                con.setRequestProperty('Cookie', sessionCookie)
+            }
+
+            if (request.payload) {
+                con.outputStream.withCloseable { it << request.payload }
+            }
+
+            if (con.responseCode >= 200 && con.responseCode < 300) {
+                if (con.responseCode == 204) return [status: 1, message: "Success"]
+                def result = new JsonSlurper().parse(con.inputStream.newReader())
+                return [status: 1, message: "Success", payload: result]
+            } else {
+                def errorText = con.errorStream?.text ?: "No error details provided"
+                return [status: -1, message: "PATCH failed. HTTP ${con.responseCode}: $errorText"]
+            }
+        } catch (Exception e) {
+            return [status: -1, message: "PATCH exception: ${e.message}"]
+        }
+    }
+
+    /**
+     * Executes an HTTP DELETE request.
+     * @param request The configuration object containing the URL and headers.
+     * @return Result Map Structure.
+     */
+    public def delete(ODataRequestBody request) {
+        try {
+            def con = connect(request.url)
+            if (con == null) {
+                return [status: -1, message: "Connection URL cannot be empty. Please set the baseUrl for this connection"]
+            }
+
+            con.setRequestMethod('DELETE')
+            for (prop in request.requestProperty) {
+                con.setRequestProperty(prop.key, prop.value)
+            }
+
+            if (request.isPassSession) {
+                if (!sessionCookie) {
+                    return [status: -1, message: "Missing sessionCookie for Connection"]
+                }
+                con.setRequestProperty('Cookie', sessionCookie)
+            }
+
+            if (request.payload) {
+                con.doOutput = true
+                con.outputStream.withCloseable { it << request.payload }
+            }
+
+            if (con.responseCode >= 200 && con.responseCode < 300) {
+                if (con.responseCode == 204) return [status: 1, message: "Success"]
+                def result = new JsonSlurper().parse(con.inputStream.newReader())
+                return [status: 1, message: "Success", payload: result]
+            } else {
+                def errorText = con.errorStream?.text ?: "No error details provided"
+                return [status: -1, message: "DELETE failed. HTTP ${con.responseCode}: $errorText"]
+            }
+        } catch (Exception e) {
+            return [status: -1, message: "DELETE exception: ${e.message}"]
+        }
+    }
+
+    /**
+     * Executes an HTTP POST request.
+     * @param request The configuration object containing the URL, payload, and headers.
+     * @return Result Map Structure.
+     */
+    public def post(ODataRequestBody request) {
+        try {
+            def con = connect(request.url)
+            if (con == null) {
+                return [status: -1, message: "Connection URL cannot be empty. Please set the baseUrl for this connection"]
+            }
+            
+            con.setRequestMethod('POST')
+            con.setDoOutput(true)
+            for (prop in request.requestProperty) {
+                con.setRequestProperty(prop.key, prop.value)
+            }
+
+            if (request.isPassSession) {
+                if (!sessionCookie) {
+                    return [status: -1, message: "Missing sessionCookie for Connection"]
+                }
+                con.setRequestProperty('Cookie', sessionCookie)
+            }
+
+            if (request.payload) {
+                con.outputStream.withCloseable { it << request.payload }
+            }
+
+            int responseCode = con.responseCode
+            if (responseCode >= 200 && responseCode < 300) {
+                String contentType = con.getHeaderField("Content-Type")
+                if (contentType && contentType.contains("multipart/mixed")) {
+                    this.responseBody = con.inputStream.text
+                } else {
+                    this.responseBody = new JsonSlurper().parse(con.inputStream.newReader())
+                }
+                return [status: 1, message: "Success", payload: this.responseBody]
+            } else {
+                def errorText = con.errorStream?.text ?: "No error details provided"
+                return [status: -1, message: "POST failed. HTTP $responseCode: $errorText"]
+            }
+        } catch (Exception e) {
+            return [status: -1, message: "POST exception: ${e.message}"]
+        }
+    }
+
+    private void disableSSL() {
+        TrustManager[] trustAllCerts = [
+            new X509TrustManager() {
+
+            X509Certificate[] getAcceptedIssuers() { return null }
+            void checkClientTrusted(X509Certificate[] certs, String authType) { }
+            void checkServerTrusted(X509Certificate[] certs, String authType) { }
+
+            }
+        ] as TrustManager[]
+
+        SSLContext sc = SSLContext.getInstance('TLS')
+        sc.init(null, trustAllCerts, new java.security.SecureRandom())
+        HttpsURLConnection.setDefaultSSLSocketFactory(sc.getSocketFactory())
+
+        HttpsURLConnection.setDefaultHostnameVerifier(new HostnameVerifier() {
+
+            boolean verify(String hostname, SSLSession session) {
+                return true
+            }
+
+        })
+    }
+}
+
+
+/**
+ * ExtractSLCredentials.groovy
+ * 
+ * Dependencies:
+ * - None
+ */
+
+
+/**
+ * Standalone method to extract SessionId from a Message Property.
+ * Returns standardized Result Map.
+ *
+ * Usage in another script:
+ * def cookieMap = extractSessionCookie(message)
+ */
+def extractSessionCookie(Message message) {
+    String sessionCookie = message.getProperty(Constants.SESSION_VAR_PROP_NAME)
+    
+    if (!sessionCookie) {
+        return [status: -1, message: "SessionCookie is missing."]
+    }
+    return [status: 1, message: "Success", payload: sessionCookie]
+}
+
+/**
+ * Extracts the BaseUrl from a Message Property.
+ * 
+ * @param message The SAP CI Message object.
+ * @return Map Result structure with status, message, payload.
+ */
+def extractBaseUrl(Message message) {
+    String baseUrl = message.getProperty(Constants.BASE_URL_PROP_NAME)
+
+    if (!baseUrl) {
+        return [status: -1, message: "BaseUrl is missing."]
+    }
+    return [status: 1, message: "Success", payload: baseUrl]
+}
+
+
+
+/**
+ * ExtractW3PCredentials.groovy
+ * 
+ * Dependencies:
+ * - None
+ */
+
+
+/**
+ * Logic to extract W3P credentials from the SAP Secure Store and map them to integration variables.
+ * 
+ * <p>Example usage in a main script:</p>
+ * <pre>
+ * {@code
+ *  import com.sap.it.api.ITApiFactory
+ *  import com.sap.it.api.securestore.SecureStoreService
+ *
+ *  def Message processData(Message message) {
+ *      def credsMap = extractW3PCredentials()
+ *
+ *      message.setHeader("W3P_Id", credsMap.id)
+ *      message.setHeader("W3P_Key", credsMap.key)
+ *      message.setProperty("W3P_BaseUrl", credsMap.baseUrl)
+ *
+ *      return message
+ *  }
+ * }
+ * </pre>
+ */
+
+/**
+ * Constants used across integration scripts.
+ * Use these to maintain consistency when accessing Security Material.
+ */
+
+
+/**
+ * Method to extract W3P credentials from the SAP Secure Store.
+ */
+def extractW3PCredentials() {
+    try {
+        def service = ITApiFactory.getService(SecureStoreService.class, null)
+        if (service == null) {
+            return [status: -1, message: "SecureStoreService is not available."]
+        }
+
+        // Extraction lambda/helper for internal use
+        def getCreds = { String key ->
+            def creds = service.getUserCredential(key)
+            if (creds == null) {
+                return null
+            }
+            return creds
+        }
+
+        def w3pCreds = getCreds(Constants.W3P_CRED)
+        if (w3pCreds == null) {
+            return [status: -1, message: "Credential '${Constants.W3P_CRED}' not found in Security Material."]
+        }
+
+        def w3pUrlCreds = getCreds(Constants.W3P_URL)
+        if (w3pUrlCreds == null) {
+            return [status: -1, message: "Credential '${Constants.W3P_URL}' not found in Security Material."]
+        }
+
+        String id = w3pCreds.getUsername()
+        String key = new String(w3pCreds.getPassword())
+        String baseUrl = new String(w3pUrlCreds.getPassword())
+
+        if (!id || !key || !baseUrl) {
+            return [status: -1, message: "Missing W3P Configuration in Secure Store (${Constants.W3P_CRED}/${Constants.W3P_URL})."]
+        }
+
+        return [
+            status: 1,
+            message: "Success",
+            id: id,
+            key: key,
+            baseUrl: baseUrl
+        ]
+    } catch (Exception e) {
+        return [status: -1, message: "Error extracting credentials: ${e.message}"]
+    }
+}

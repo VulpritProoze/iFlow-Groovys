@@ -5,7 +5,6 @@
  * - Misc/LoggerService.groovy (Standalone implementation appended below)
  * - Misc/SOAPConnection.groovy (Integrated logic)
  * - Misc/ExtractW3PCredentials.groovy (Helper methods)
- * - Misc/BuildXmlResponse.groovy
  * - Misc/ExtractW3PTimestampAndBatch.groovy
  */
 import java.net.URL
@@ -87,12 +86,7 @@ def Message processData(Message message) {
             logger.logBoth(new LogRequest(title: Constants.LOG_RECID, stepName: Constants.STEP_NAME, status: "ERROR", inputPayload: payload, outputPayload: "extractW3PTimestampAndBatch failed: ${extractRes?.message}"))
         }
 
-        // Always use the append helper — it handles creating or inserting into
-        // a <responses> wrapper. We do not set any message properties here.
-        def res = appendCustomXmlResponseToBody(message, Constants.ACTION, responseXml)
-        if (res?.status != 1) {
-            logger.logBoth(new LogRequest(title: Constants.LOG_RECID, stepName: Constants.STEP_NAME, status: "ERROR", inputPayload: payload, outputPayload: "appendCustomXmlResponseToBody failed: ${res?.message}"))
-        }
+        message.setBody(responseXml)
 
     } catch (Exception e) {
         logger.logBoth(new LogRequest(title: Constants.LOG_RECID, stepName: Constants.STEP_NAME, status: "ERROR", inputPayload: payload, outputPayload: "Exception: ${e.message}\nStacktrace: ${e.stackTrace.take(5).join('\n')}"))
@@ -759,80 +753,6 @@ def extractW3PCredentials() {
         ]
     } catch (Exception e) {
         return [status: -1, message: "Error extracting credentials: ${e.message}"]
-    }
-}
-
-
-
-/**
- * AppendCustomXmlResponse.groovy
- *
- * Behavior notes:
- * - Response XML is preserved inside a CDATA in the <value> element.
- * - Existing body handling:
- *   - If body already contains a <responses>...</responses> root, the new
- *     <response> is inserted before the closing tag.
- *   - If body is non-empty but not wrapped, the existing body is wrapped as the
- *     first <response> element (key taken from existing `W3P_Key` property if present).
- *   - Empty body => creates <responses> with a single <response> element.
- * - Functions never throw; errors return a result map with status 0.
- */
-
-
-/**
- * Append a built <response> element into the `message` body under a
- * <responses> root. Sets message property `W3P_Key` to uniqueId on success.
- * Returns a result Map: status/message/payload (payload contains the new body).
- */
-def appendCustomXmlResponseToBody(def msg, String uniqueId, String xmlResponse) {
-    try {
-        if (!msg) {
-            return [status: 0, message: 'appendCustomXmlResponseToBody: message is required', payload: null]
-        }
-
-        // Inline the previous buildCustomXmlResponse helper here so this file is self-contained.
-        String uid = uniqueId ?: java.util.UUID.randomUUID().toString()
-        def xml = xmlResponse ?: ''
-        // Strip optional XML declaration
-        String xmlNoDecl = xml.replaceFirst(/^\s*<\?xml.*?\?>\s*/, '')
-        // Ensure CDATA safety by splitting any closing CDATA sequences
-        String safeXml = xmlNoDecl.replace(']]>', ']]]]><![CDATA[>')
-        // Escape the key
-        String escUid = uid.toString().replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;').replace("'", '&apos;')
-        String element = "<response><key>${escUid}</key><value><![CDATA[${safeXml}]]></value></response>"
-        // NOTE: Do NOT set message properties or headers for sensitive keys.
-        // The unique id is included inside the generated <response> element only.
-
-        String current = msg.getBody(java.lang.String) ?: ''
-
-        if (current?.trim()) {
-            // Insert into existing <responses> root if present
-            if (current.contains('<responses') && current.contains('</responses>')) {
-                int idx = current.lastIndexOf('</responses>')
-                if (idx >= 0) {
-                    String newBody = current.substring(0, idx) + element + current.substring(idx)
-                    msg.setBody(newBody)
-                    return [status: 1, message: 'Appended to existing <responses>', payload: newBody]
-                }
-            }
-
-            // Wrap existing body as the first <response>
-            String existingNoDecl = current.replaceFirst(/^\s*<\?xml.*?\?>\s*/, '')
-            String safeExisting = existingNoDecl.replace(']]>', ']]]]><![CDATA[>')
-            String existingKey = msg.getProperty('W3P_Key') ?: 'existing'
-            String escExistingKey = existingKey?.toString().replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;').replace("'", '&apos;')
-            String firstResponse = "<response><key>${escExistingKey}</key><value><![CDATA[${safeExisting}]]></value></response>"
-            String newBody = "<responses>${firstResponse}${element}</responses>"
-            msg.setBody(newBody)
-            return [status: 1, message: 'Wrapped existing body and appended new response', payload: newBody]
-        } else {
-            // Empty body -> create new responses root
-            String newBody = "<responses>${element}</responses>"
-            msg.setBody(newBody)
-            return [status: 1, message: 'Created <responses> and added response', payload: newBody]
-        }
-    } catch (Exception e) {
-        return [status: 0, message: "appendCustomXmlResponseToBody error: ${e.message}", payload: e?.stackTrace?.take(5)?.collect{ it.toString() }]
     }
 }
 

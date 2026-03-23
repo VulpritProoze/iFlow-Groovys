@@ -5,7 +5,6 @@
  * - Misc/LoggerService.groovy (Standalone implementation appended below)
  * - Misc/SOAPConnection.groovy (Integrated logic)
  * - Misc/ExtractW3PCredentials.groovy (Helper methods)
- * - Misc/BuildXmlResponse.groovy
  * - Misc/ExtractW3PTimestampAndBatch.groovy
  */
 import java.net.URL
