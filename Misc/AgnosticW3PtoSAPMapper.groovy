@@ -1,5 +1,5 @@
 /**
- * W3PtoSAP_MapWarehouse.groovy
+ * AgnosticW3PtoSAPMapper.groovy
  * 
  * Dependencies:
  * - Misc/Mapper.groovy (Logic refactored and appended below)
@@ -27,24 +27,39 @@ class Constants {
     static final String W3P_CRED = "[W3P_CRED]"
     static final String W3P_URL = "[W3P_URL]"
     static final String STEP_NAME = "W3PtoSAP_[StepName]"
-    
+
     /**
-     * Mapping configuration
-     * - Keys are target field names.
-     * - Values are source expressions. Supported expression forms and behaviour:
-     *     1) `RESPONSE_KEY.field` -> looks up `field` from the response identified by `RESPONSE_KEY`.
-     *        When the mapper emits one object per source record it will prefer the per-index record; otherwise the first record is used.
-     *     2) `fieldName` -> resolves against the current record when mapping record-by-record.
-     *     3) Numeric / arithmetic: supports `+`, `-`, `*`, and `/` with operator precedence (`*` and `/` before `+` and `-`).
-     *        `+` performs numeric addition when both operands are numeric; otherwise it concatenates as strings.
-     *     4) Literal strings: use single or double quotes, e.g. `'PRE-' + GET_ITEM1.fitemcode`.
+     * Mapping configuration for transforming source records into target objects.
+     *
+     * Capabilities:
+     * - Simple flat mappings: map target field -> source token (e.g. ["Code":"fuomid","Name":"fname"]).
+     * - Nested mappings: Map values produce nested objects recursively.
+     * - Lists: List values produce arrays of resolved items.
+     * - Closures: dynamic generators with signature { responsesMap, currentRecord, idx -> ... }.
+     * - Expressions: string expressions supporting +, -, *, / with operator precedence.
+     *   - Use RESPONSE.field to reference other response sets (for example: "GET_WAREHOUSE.fsiteid").
+     *   - Use quoted literals 'text' or "text".
+     *   - '+' will concatenate when operands are non-numeric, otherwise perform numeric addition.
+     * - Custom rules: use `Constants.CUSTOM_RULES` to register per-path transformation closures.
+     *
+     * Examples:
+     * static final Map MAPPING = [
+     *   "Code": "fuomid",                     // simple field mapping
+     *   "Name": "fname",                      // simple field mapping
+     *   "Dimensions": [                         // nested object
+     *       "Height": "h",
+     *       "Width": "w"
+     *   ],
+     *   "Tags": ["tag1", "tag2"],           // static list
+     *   "DynamicList": { responses, rec, idx ->   // closure-based dynamic value
+     *       return [ A: rec.fname ?: '', B: responses.GET_X?.first?.value ?: '' ]
+     *   },
+     *   "Price": "unitPrice * quantity"       // arithmetic expression
+     * ]
      *
      * Notes:
-     * - `extractMappedRecords` returns a Result map: `[status:1|0, message:'...', payload: [...]]`.
-     *   On mapping errors (non-numeric operand for `*`/`/`/`-`, division by zero, malformed expressions) the function returns
-     *   `status: 0` with a descriptive `message` and an empty `payload`.
-     * - Missing fields or unresolved references evaluate to an empty string by default.
-     * - Custom transformation functions can be provided via `CUSTOM_RULES` and are applied to resolved values.
+     * - Expressions and RESPONSE lookups are resolved at runtime by the mapper.
+     * - Use `Constants.CUSTOM_RULES['Path.To.Field'] = { val -> ... }` to post-process resolved values.
      */
     static final Map MAPPING = [:]
     static final Map CUSTOM_RULES = [:]
@@ -316,6 +331,47 @@ def extractMappedRecords(String payload, Map mapping, Map customRules = [:]) {
         return resolveToken(finalTok, responsesMap, currentRecord, idx) ?: ''
     }
 
+        // Resolve a mapping specification which may be:
+        // - a String expression -> resolves via resolveExpression
+        // - a Map -> treated as a nested mapping (recurses)
+        // - a List -> each element resolved and returned as a list
+        // - a Closure -> dynamic constructor invoked as closure(responsesMap, currentRecord, idx)
+        // path: dot-delimited key path used to apply customRules (if provided)
+        def resolveMappingValue
+        resolveMappingValue = { def spec, Map responsesMap, Map currentRecord = null, Integer idx = null, String path = null ->
+            if (spec == null) return ''
+
+            if (spec instanceof Closure) {
+                try {
+                    return spec(responsesMap, currentRecord, idx)
+                } catch (e) {
+                    throw new IllegalArgumentException("Mapping closure for '${path ?: 'root'}' threw: ${e.message}")
+                }
+            }
+
+            // Nested map -> build nested object recursively
+            if (spec instanceof Map) {
+                def nested = [:]
+                spec.each { nk, nSpec ->
+                    def childPath = (path ? (path + '.' + nk) : nk.toString())
+                    nested[nk] = resolveMappingValue(nSpec, responsesMap, currentRecord, idx, childPath)
+                }
+                return nested
+            }
+
+            // List -> resolve each element
+            if (spec instanceof List) {
+                return spec.collect { item -> resolveMappingValue(item, responsesMap, currentRecord, idx, path) }
+            }
+
+            // Leaf: string/primitive -> resolve expression and apply customRules if any for full path
+            def resolved = resolveExpression(spec?.toString(), responsesMap, currentRecord, idx)
+            if (path != null && customRules.containsKey(path)) {
+                return customRules[path](resolved)
+            }
+            return resolved ?: ''
+        }
+
     // Parse XML payload
     if (payload.trim().startsWith('<')) {
         def sl = newSafeSlurper()
@@ -329,103 +385,53 @@ def extractMappedRecords(String payload, Map mapping, Map customRules = [:]) {
             responsesRoot = envelope.'**'.find { it.name() == 'responses' }
         }
 
-        if (responsesRoot) {
-            // Build responses map: key -> { records: [map], first: map }
-            def responsesMap = [:]
-            responsesRoot.response.each { resp ->
-                def rkey = resp.key?.text()?.trim()
-                if (!rkey) return
-                def respValue = resp.value?.text() ?: ''
-                def entry = [records: [], first: [:]]
-                try {
-                    if (respValue) {
-                        def valEnv = newSafeSlurper().parseText(respValue)
-                        def inner = valEnv.Body?.callResponse?.Result?.text() ?: valEnv.'**'.find { it.name() == 'Result' }?.text()
-                        if (inner) {
-                            def innerRoot = newSafeSlurper().parseText(inner)
-                            innerRoot.data.record.each { rec ->
-                                entry.records << recordToMap(rec)
-                            }
-                            entry.first = entry.records ? entry.records[0] : [:]
-                            entry.raw = inner
-                        }
-                    }
-                } catch (e) {
-                    // ignore parsing errors for this response
-                }
-                responsesMap[rkey] = entry
-            }
-
-            // Decide whether to produce one mapped result per record
-            int maxRecords = 0
-            responsesMap.each { k, v -> if (v.records) maxRecords = Math.max(maxRecords, v.records.size()) }
-
-            if (maxRecords <= 1) {
-                // Single-result behavior (backwards compatible)
-                try {
-                    def mapped = [:]
-                    mapping.each { target, sourceSpec ->
-                        def resolved = resolveExpression(sourceSpec?.toString(), responsesMap, null, null)
-                        if (customRules.containsKey(target)) mapped[target] = customRules[target](resolved) else mapped[target] = resolved ?: ''
-                    }
-                    return [status: 1, message: 'OK', payload: [mapped]]
-                } catch (IllegalArgumentException e) {
-                    return [status: 0, message: "Mapping error: ${e.message}", payload: []]
-                }
-            }
-
-            // Multi-record behavior: build one mapped object per index (align by position)
-            try {
-                def results = []
-                def singleKey = (responsesMap.keySet().size() == 1) ? responsesMap.keySet().iterator().next() : null
-                for (int i = 0; i < maxRecords; i++) {
-                    Map currentRecord = null
-                    if (singleKey) currentRecord = (responsesMap[singleKey].records && responsesMap[singleKey].records.size() > i) ? responsesMap[singleKey].records[i] : [:]
-                    def mapped = [:]
-                    mapping.each { target, sourceSpec ->
-                        def resolved = resolveExpression(sourceSpec?.toString(), responsesMap, currentRecord, i)
-                        if (customRules.containsKey(target)) mapped[target] = customRules[target](resolved) else mapped[target] = resolved ?: ''
-                    }
-                    results << mapped
-                }
-                return [status: 1, message: 'OK', payload: results]
-            } catch (IllegalArgumentException e) {
-                return [status: 0, message: "Mapping error: ${e.message}", payload: []]
-            }
-        }
-
-        // Not a <responses> wrapper: parse as existing SOAP->Result->innerXml flow
+        // Parse SOAP -> Result -> innerXml flow and map records directly from inner XML
         def innerXml = envelope.Body?.callResponse?.Result?.text() ?: envelope.'**'.find { it.name() == 'Result' }?.text()
-        if (!innerXml) {
-            // maybe direct data structure
-            def root = envelope
-            def rawRecords = []
-            try { rawRecords = root.data.record.collect { it } } catch (e) { rawRecords = [] }
+        if (innerXml) {
             try {
-                def mappedList = rawRecords.collect { rec ->
-                    def recMap = (rec instanceof GPathResult) ? recordToMap(rec) : (rec instanceof Map ? rec : [value: rec.toString()])
+                // Unescape common XML entities that were placed into the Result element
+                def unescapeXml = { String s ->
+                    if (s == null) return ''
+                    def x = s
+                    x = x.replaceAll('&lt;', '<')
+                    x = x.replaceAll('&gt;', '>')
+                    x = x.replaceAll('&quot;', '"')
+                    x = x.replaceAll('&apos;', "'")
+                    x = x.replaceAll('&amp;', '&')
+                    return x
+                }
+
+                def innerUnescaped = unescapeXml(innerXml)
+                def innerRoot = newSafeSlurper().parseText(innerUnescaped)
+                def gRecords = []
+                try { gRecords = innerRoot.data.record } catch (e) { gRecords = [] }
+
+                def mappedList = gRecords.collect { rec ->
+                    def recMap = recordToMap(rec)
                     def mapped = [:]
                     mapping.each { target, sourceSpec ->
-                        def resolved = resolveExpression(sourceSpec?.toString(), [:], recMap)
-                        if (customRules.containsKey(target)) mapped[target] = customRules[target](resolved) else mapped[target] = resolved ?: ''
+                        mapped[target] = resolveMappingValue(sourceSpec, [:], recMap, null, target)
                     }
                     mapped
                 }
                 return [status: 1, message: 'OK', payload: mappedList]
             } catch (IllegalArgumentException e) {
                 return [status: 0, message: "Mapping error: ${e.message}", payload: []]
+            } catch (Exception e) {
+                return [status: 0, message: "Failed to parse inner XML: ${e.message}", payload: []]
             }
         }
 
+        // No <Result> or failed to parse it: attempt to read records directly from the envelope
+        def root = envelope
+        def rawRecords = []
+        try { rawRecords = root.data.record.collect { it } } catch (e) { rawRecords = [] }
         try {
-            def innerRoot = newSafeSlurper().parseText(innerXml)
-            def gRecords = innerRoot.data.record
-            def mappedList = gRecords.collect { rec ->
-                def recMap = recordToMap(rec)
+            def mappedList = rawRecords.collect { rec ->
+                def recMap = (rec instanceof GPathResult) ? recordToMap(rec) : (rec instanceof Map ? rec : [value: rec.toString()])
                 def mapped = [:]
                 mapping.each { target, sourceSpec ->
-                    def resolved = resolveExpression(sourceSpec?.toString(), [:], recMap)
-                    if (customRules.containsKey(target)) mapped[target] = customRules[target](resolved) else mapped[target] = resolved ?: ''
+                    mapped[target] = resolveMappingValue(sourceSpec, [:], recMap, null, target)
                 }
                 mapped
             }
@@ -455,8 +461,7 @@ def extractMappedRecords(String payload, Map mapping, Map customRules = [:]) {
                 def recMap = (record instanceof Map) ? record : record
                 def mapped = [:]
                 mapping.each { target, sourceSpec ->
-                    def resolved = resolveExpression(sourceSpec?.toString(), [:], recMap)
-                    if (customRules.containsKey(target)) mapped[target] = customRules[target](resolved) else mapped[target] = resolved ?: ''
+                    mapped[target] = resolveMappingValue(sourceSpec, [:], recMap, null, target)
                 }
                 mapped
             }

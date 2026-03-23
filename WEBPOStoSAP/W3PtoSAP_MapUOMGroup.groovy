@@ -1,5 +1,5 @@
 /**
- * W3PtoSAP_MapUOM.groovy
+ * W3PtoSAP_MapUOMGroup.groovy
  * 
  * Dependencies:
  * - Misc/Mapper.groovy (Logic refactored and appended below)
@@ -26,7 +26,7 @@ import java.security.cert.X509Certificate
 class Constants {
     static final String W3P_CRED = "[W3P_CRED]"
     static final String W3P_URL = "[W3P_URL]"
-    static final String STEP_NAME = "W3PtoSAP_MapUOM"
+    static final String STEP_NAME = "W3PtoSAP_MapUOMGroup"
 
     /**
      * Mapping configuration
@@ -47,8 +47,6 @@ class Constants {
      * - Custom transformation functions can be provided via `CUSTOM_RULES` and are applied to resolved values.
      */
     static final Map MAPPING = [
-        "Code"                : "GET_UOM.fuomid",
-        "Name"                : "GET_UOM.fname",
     ]
     static final Map CUSTOM_RULES = [:]
 
