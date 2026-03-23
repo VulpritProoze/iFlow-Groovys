@@ -1128,6 +1128,47 @@ class HTTPODataConnection {
     }
 
     /**
+     * Executes an HTTP PATCH request.
+     * @param request The configuration object containing the URL, payload, and headers.
+     * @return Result Map Structure.
+     */
+    public def patch(ODataRequestBody request) {
+        try {
+            def con = connect(request.url)
+            if (con == null) {
+                return [status: -1, message: "Connection URL cannot be empty. Please set the baseUrl for this connection"]
+            }
+            con.setRequestMethod('PATCH')
+            con.doOutput = true
+            for (prop in request.requestProperty) {
+                con.setRequestProperty(prop.key, prop.value)
+            }
+
+            if (request.isPassSession) {
+                if (!sessionCookie) {
+                    return [status: -1, message: "Missing sessionCookie for Connection"]
+                }
+                con.setRequestProperty('Cookie', sessionCookie)
+            }
+
+            if (request.payload) {
+                con.outputStream.withCloseable { it << request.payload }
+            }
+
+            if (con.responseCode >= 200 && con.responseCode < 300) {
+                if (con.responseCode == 204) return [status: 1, message: "Success"]
+                def result = new JsonSlurper().parse(con.inputStream.newReader())
+                return [status: 1, message: "Success", payload: result]
+            } else {
+                def errorText = con.errorStream?.text ?: "No error details provided"
+                return [status: -1, message: "PATCH failed. HTTP ${con.responseCode}: $errorText"]
+            }
+        } catch (Exception e) {
+            return [status: -1, message: "PATCH exception: ${e.message}"]
+        }
+    }
+
+    /**
      * Executes an HTTP DELETE request.
      * @param request The configuration object containing the URL and headers.
      * @return Result Map Structure.
