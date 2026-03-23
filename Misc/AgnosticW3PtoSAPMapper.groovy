@@ -4,6 +4,8 @@
  * Dependencies:
  * - Misc/Mapper.groovy (Logic refactored and appended below)
  * - Misc/LoggerService.groovy (Logic refactored and appended below)
+ * - Misc/ODataConnection.groovy
+ * - Misc/SOAPConnection.groovy
  */
 import com.sap.gateway.ip.core.customdev.util.Message;
 import groovy.util.XmlSlurper;
@@ -29,6 +31,9 @@ class Constants {
     static final String STEP_NAME = "W3PtoSAP_[StepName]"
 
     /**
+     * QUICK NOTE: Mapping Constants here are intended for mappings that do not require
+     * complex orchestration by default. For more complex scenarios see the Remarks below.
+     *
      * Mapping configuration for transforming source records into target objects.
      *
      * Capabilities:
@@ -60,12 +65,33 @@ class Constants {
      * Notes:
      * - Expressions and RESPONSE lookups are resolved at runtime by the mapper.
      * - Use `Constants.CUSTOM_RULES['Path.To.Field'] = { val -> ... }` to post-process resolved values.
+     *
+     * Remarks:
+     * - Multi-call mappings: this mapper file exposes both SOAP (`HTTPSOAPConnection`) and OData
+     *   (`HTTPODataConnection`) helpers. For complex mappings that need to call additional
+     *   APIs (e.g., enrich a record with multiple remote lookups) you can perform those calls
+     *   inside mapping `Closure`s or orchestrate them in a pre-processing step and place
+     *   the results into a `responses` map referenced via `RESPONSE.field` tokens.
+     *
+     * - SAP login / session handling: if a mapping or pre-processing step requires logging
+     *   into SAP, use the provided utilities (see
+     *   the `OData` / `SOAP` connection classes). In an iFlow, add a Content Modifier
+     *   before this mapping step to extract and store the SAP login token (or session) into
+     *   the process variable store; then the mapping code or closures can read that value
+     *   from the variable store or from the `responses` map to attach to downstream calls.
+     *
+     * - LoggerService.ExtractW3PCredentials is a private method. Use extractW3PCredentials() instead
      */
     static final Map MAPPING = [:]
     static final Map CUSTOM_RULES = [:]
 
     // Logging Constant/s
     static final String LOG_RECID = "W3P"
+
+    // Uncomment these constants if logging in to SAP
+    // static final String SESSION_VAR_PROP_NAME = "[B1SESSION]"
+    // static final String BASE_URL_PROP_NAME = "[SL_BaseURL]"
+
 }
 
 /**
@@ -89,6 +115,7 @@ def Message processData(Message message) {
         return message // Premature return instead of exception
     }
 
+    // Clear out code in try block if customize
     try {
         // 1. Map data -> returns a Result map: [status:1|0, message: '', payload: [...]]
         def result = extractMappedRecords(
@@ -141,7 +168,30 @@ def Message processData(Message message) {
     return message
 }
 
+// Add other methods here for customization
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+// ================================
+// HELPER METHODS
+// Do not modify
 
 /**
  * Agnostic Payload Processor (Refactored from Mapper.groovy)
@@ -896,3 +946,424 @@ class HTTPSOAPConnection {
     }
 }
 
+/**
+ * ODataConnection.groovy
+ * 
+ * Dependencies:
+ * - None
+ */
+/*
+** Note that this is an HTTP Connection by default. For a more secure connection, please use HTTPS.
+** This is only intended for testing.
+*/
+
+/**
+ * Represents the configuration for an HTTP OData request.
+ * Acts as a Data Transfer Object (DTO) to consolidate URL, payload, and headers.
+ */
+class ODataRequestBody {
+
+    /*
+    **  The relative endpoint URL to be appended to the base URL 
+    **  Note: Add filters to the url if needed (e.g. /Items?$filter=ItemCode%20eq%20'i001')
+    */
+    String url
+    
+    /** String of payload to be sent as body */
+    String payload
+    
+    /** Request headers (defaults to application/json) */
+    Map<String, String> requestProperty = [
+        'Content-Type': 'application/json'
+    ]
+    
+    /** Whether to automatically append the session cookie to the request */
+    boolean isPassSession = true
+}
+
+
+class HTTPODataConnection {
+
+    private String sessionCookie
+    private String baseUrl
+    private Object responseBody
+
+    public HTTPODataConnection(String baseUrl) {
+        this.baseUrl = baseUrl
+    }
+
+    public def setSessionCookie(String cookie) {
+        this.sessionCookie = cookie
+        return this
+    }
+
+    public def setBaseUrl(String url) {
+        baseUrl = url
+        return this
+    }
+
+    /**
+     * Extracts the first element if the internal responseBody is a List, otherwise returns an empty Map.
+     * Updates the internal reference to allow chaining.
+     * @return the current instance for chaining.
+     */
+    public def parse() {
+        if (this.responseBody instanceof List && !this.responseBody.isEmpty()) {
+            this.responseBody = this.responseBody[0]
+        } else if (this.responseBody instanceof Map && this.responseBody.value instanceof List) {
+            this.responseBody = this.responseBody.value[0]
+        }
+        return this
+    }
+
+    /**
+     * Converts the current internal responseBody to a JSON string.
+     * @return A JSON formatted String.
+     */
+    public def toJson() {
+        if (!this.responseBody) return "{}"
+        return JsonOutput.toJson(this.responseBody)
+    }
+
+    /**
+     * Returns the raw response body.
+     */
+    public Object getBody() {
+        return this.responseBody
+    }
+
+    public HttpURLConnection connect(String url) {
+        if (url == null || url == '') {
+            return null
+        }
+
+        URL endpoint = new URL(baseUrl + url)
+        HttpURLConnection connection = (HttpURLConnection) endpoint.openConnection()
+
+        if (connection instanceof HttpsURLConnection) {
+            disableSSL()
+        }
+
+        return connection
+    }
+
+    /**
+     * Executes an HTTP GET request.
+     * @param request The configuration object containing the URL and headers.
+     * @return Result Map Structure.
+     */
+    public def get(ODataRequestBody request) {
+        try {
+            def con = connect(request.url)
+            if (con == null) {
+                return [status: -1, message: "Connection URL cannot be empty. Please set the baseUrl for this connection"]
+            }
+            con.setRequestMethod('GET')
+            for (prop in request.requestProperty) {
+                con.setRequestProperty(prop.key, prop.value)
+            }
+
+            if (request.isPassSession) {
+                if (!sessionCookie) {
+                    return [status: -1, message: "Missing sessionCookie for Connection"]
+                }
+                con.setRequestProperty('Cookie', sessionCookie)
+            }
+
+            if (request.payload) {
+                con.doOutput = true
+                con.outputStream.withCloseable { it << request.payload }
+            }
+
+            if (con.responseCode >= 200 && con.responseCode < 300) {
+                def result = new JsonSlurper().parse(con.inputStream.newReader())
+                return [status: 1, message: "Success", payload: result]
+            } else {
+                def errorText = con.errorStream?.text ?: "No error details provided"
+                return [status: -1, message: "GET failed. HTTP ${con.responseCode}: $errorText"]
+            }
+        } catch (Exception e) {
+            return [status: -1, message: "GET exception: ${e.message}"]
+        }
+    }
+
+    /**
+     * Executes an HTTP PUT request.
+     * @param request The configuration object containing the URL, payload, and headers.
+     * @return Result Map Structure.
+     */
+    public def put(ODataRequestBody request) {
+        try {
+            def con = connect(request.url)
+            if (con == null) {
+                return [status: -1, message: "Connection URL cannot be empty. Please set the baseUrl for this connection"]
+            }
+            con.setRequestMethod('PUT')
+            con.doOutput = true
+            for (prop in request.requestProperty) {
+                con.setRequestProperty(prop.key, prop.value)
+            }
+
+            if (request.isPassSession) {
+                if (!sessionCookie) {
+                    return [status: -1, message: "Missing sessionCookie for Connection"]
+                }
+                con.setRequestProperty('Cookie', sessionCookie)
+            }
+
+            if (request.payload) {
+                con.outputStream.withCloseable { it << request.payload }
+            }
+
+            if (con.responseCode >= 200 && con.responseCode < 300) {
+                def result = new JsonSlurper().parse(con.inputStream.newReader())
+                return [status: 1, message: "Success", payload: result]
+            } else {
+                def errorText = con.errorStream?.text ?: "No error details provided"
+                return [status: -1, message: "PUT failed. HTTP ${con.responseCode}: $errorText"]
+            }
+        } catch (Exception e) {
+            return [status: -1, message: "PUT exception: ${e.message}"]
+        }
+    }
+
+    /**
+     * Executes an HTTP DELETE request.
+     * @param request The configuration object containing the URL and headers.
+     * @return Result Map Structure.
+     */
+    public def delete(ODataRequestBody request) {
+        try {
+            def con = connect(request.url)
+            if (con == null) {
+                return [status: -1, message: "Connection URL cannot be empty. Please set the baseUrl for this connection"]
+            }
+
+            con.setRequestMethod('DELETE')
+            for (prop in request.requestProperty) {
+                con.setRequestProperty(prop.key, prop.value)
+            }
+
+            if (request.isPassSession) {
+                if (!sessionCookie) {
+                    return [status: -1, message: "Missing sessionCookie for Connection"]
+                }
+                con.setRequestProperty('Cookie', sessionCookie)
+            }
+
+            if (request.payload) {
+                con.doOutput = true
+                con.outputStream.withCloseable { it << request.payload }
+            }
+
+            if (con.responseCode >= 200 && con.responseCode < 300) {
+                if (con.responseCode == 204) return [status: 1, message: "Success"]
+                def result = new JsonSlurper().parse(con.inputStream.newReader())
+                return [status: 1, message: "Success", payload: result]
+            } else {
+                def errorText = con.errorStream?.text ?: "No error details provided"
+                return [status: -1, message: "DELETE failed. HTTP ${con.responseCode}: $errorText"]
+            }
+        } catch (Exception e) {
+            return [status: -1, message: "DELETE exception: ${e.message}"]
+        }
+    }
+
+    /**
+     * Executes an HTTP POST request.
+     * @param request The configuration object containing the URL, payload, and headers.
+     * @return Result Map Structure.
+     */
+    public def post(ODataRequestBody request) {
+        try {
+            def con = connect(request.url)
+            if (con == null) {
+                return [status: -1, message: "Connection URL cannot be empty. Please set the baseUrl for this connection"]
+            }
+            
+            con.setRequestMethod('POST')
+            con.setDoOutput(true)
+            for (prop in request.requestProperty) {
+                con.setRequestProperty(prop.key, prop.value)
+            }
+
+            if (request.isPassSession) {
+                if (!sessionCookie) {
+                    return [status: -1, message: "Missing sessionCookie for Connection"]
+                }
+                con.setRequestProperty('Cookie', sessionCookie)
+            }
+
+            if (request.payload) {
+                con.outputStream.withCloseable { it << request.payload }
+            }
+
+            int responseCode = con.responseCode
+            if (responseCode >= 200 && responseCode < 300) {
+                String contentType = con.getHeaderField("Content-Type")
+                if (contentType && contentType.contains("multipart/mixed")) {
+                    this.responseBody = con.inputStream.text
+                } else {
+                    this.responseBody = new JsonSlurper().parse(con.inputStream.newReader())
+                }
+                return [status: 1, message: "Success", payload: this.responseBody]
+            } else {
+                def errorText = con.errorStream?.text ?: "No error details provided"
+                return [status: -1, message: "POST failed. HTTP $responseCode: $errorText"]
+            }
+        } catch (Exception e) {
+            return [status: -1, message: "POST exception: ${e.message}"]
+        }
+    }
+
+    private void disableSSL() {
+        TrustManager[] trustAllCerts = [
+            new X509TrustManager() {
+
+            X509Certificate[] getAcceptedIssuers() { return null }
+            void checkClientTrusted(X509Certificate[] certs, String authType) { }
+            void checkServerTrusted(X509Certificate[] certs, String authType) { }
+
+            }
+        ] as TrustManager[]
+
+        SSLContext sc = SSLContext.getInstance('TLS')
+        sc.init(null, trustAllCerts, new java.security.SecureRandom())
+        HttpsURLConnection.setDefaultSSLSocketFactory(sc.getSocketFactory())
+
+        HttpsURLConnection.setDefaultHostnameVerifier(new HostnameVerifier() {
+
+            boolean verify(String hostname, SSLSession session) {
+                return true
+            }
+
+        })
+    }
+}
+
+
+/**
+ * ExtractSLCredentials.groovy
+ * 
+ * Dependencies:
+ * - None
+ */
+
+
+/**
+ * Standalone method to extract SessionId from a Message Property.
+ * Returns standardized Result Map.
+ *
+ * Usage in another script:
+ * def cookieMap = extractSessionCookie(message)
+ */
+def extractSessionCookie(Message message) {
+    String sessionCookie = message.getProperty(Constants.SESSION_VAR_PROP_NAME)
+    
+    if (!sessionCookie) {
+        return [status: -1, message: "SessionCookie is missing."]
+    }
+    return [status: 1, message: "Success", payload: sessionCookie]
+}
+
+/**
+ * Extracts the BaseUrl from a Message Property.
+ * 
+ * @param message The SAP CI Message object.
+ * @return Map Result structure with status, message, payload.
+ */
+def extractBaseUrl(Message message) {
+    String baseUrl = message.getProperty(Constants.BASE_URL_PROP_NAME)
+
+    if (!baseUrl) {
+        return [status: -1, message: "BaseUrl is missing."]
+    }
+    return [status: 1, message: "Success", payload: baseUrl]
+}
+
+
+
+/**
+ * ExtractW3PCredentials.groovy
+ * 
+ * Dependencies:
+ * - None
+ */
+
+
+/**
+ * Logic to extract W3P credentials from the SAP Secure Store and map them to integration variables.
+ * 
+ * <p>Example usage in a main script:</p>
+ * <pre>
+ * {@code
+ *  import com.sap.it.api.ITApiFactory
+ *  import com.sap.it.api.securestore.SecureStoreService
+ *
+ *  def Message processData(Message message) {
+ *      def credsMap = extractW3PCredentials()
+ *
+ *      message.setHeader("W3P_Id", credsMap.id)
+ *      message.setHeader("W3P_Key", credsMap.key)
+ *      message.setProperty("W3P_BaseUrl", credsMap.baseUrl)
+ *
+ *      return message
+ *  }
+ * }
+ * </pre>
+ */
+
+/**
+ * Constants used across integration scripts.
+ * Use these to maintain consistency when accessing Security Material.
+ */
+
+
+/**
+ * Method to extract W3P credentials from the SAP Secure Store.
+ */
+def extractW3PCredentials() {
+    try {
+        def service = ITApiFactory.getService(SecureStoreService.class, null)
+        if (service == null) {
+            return [status: -1, message: "SecureStoreService is not available."]
+        }
+
+        // Extraction lambda/helper for internal use
+        def getCreds = { String key ->
+            def creds = service.getUserCredential(key)
+            if (creds == null) {
+                return null
+            }
+            return creds
+        }
+
+        def w3pCreds = getCreds(Constants.W3P_CRED)
+        if (w3pCreds == null) {
+            return [status: -1, message: "Credential '${Constants.W3P_CRED}' not found in Security Material."]
+        }
+
+        def w3pUrlCreds = getCreds(Constants.W3P_URL)
+        if (w3pUrlCreds == null) {
+            return [status: -1, message: "Credential '${Constants.W3P_URL}' not found in Security Material."]
+        }
+
+        String id = w3pCreds.getUsername()
+        String key = new String(w3pCreds.getPassword())
+        String baseUrl = new String(w3pUrlCreds.getPassword())
+
+        if (!id || !key || !baseUrl) {
+            return [status: -1, message: "Missing W3P Configuration in Secure Store (${Constants.W3P_CRED}/${Constants.W3P_URL})."]
+        }
+
+        return [
+            status: 1,
+            message: "Success",
+            id: id,
+            key: key,
+            baseUrl: baseUrl
+        ]
+    } catch (Exception e) {
+        return [status: -1, message: "Error extracting credentials: ${e.message}"]
+    }
+}
