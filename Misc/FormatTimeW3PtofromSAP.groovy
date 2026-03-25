@@ -4,6 +4,7 @@
 
 import com.sap.gateway.ip.core.customdev.util.Message
 import java.time.LocalDateTime
+import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 
 /**
@@ -21,12 +22,25 @@ def String convertBasicToUtcExtended(String basicTimestamp) {
     if (basicTimestamp == null || basicTimestamp.trim().isEmpty()) {
         return ""
     }
-    
-    def formatter = DateTimeFormatter.ofPattern("yyyyMMddHHmmss")
+    def ts = basicTimestamp.trim()
     def utcFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss'Z'")
-    
-    LocalDateTime dateTime = LocalDateTime.parse(basicTimestamp.trim(), formatter)
-    return dateTime.format(utcFormatter)
+
+    try {
+        if (ts ==~ /^\\d{8}$/) {
+            // date-only basic format yyyyMMdd -> set time to 00:00:00Z
+            def date = LocalDate.parse(ts, DateTimeFormatter.ofPattern("yyyyMMdd"))
+            return date.atStartOfDay().format(utcFormatter)
+        } else if (ts ==~ /^\\d{14}$/) {
+            def formatter = DateTimeFormatter.ofPattern("yyyyMMddHHmmss")
+            def dateTime = LocalDateTime.parse(ts, formatter)
+            return dateTime.format(utcFormatter)
+        } else {
+            // unsupported format
+            return ""
+        }
+    } catch (Exception e) {
+        return ""
+    }
 }
 
 /**
@@ -37,10 +51,22 @@ def String convertUtcExtendedToBasic(String utcTimestamp) {
     if (utcTimestamp == null || utcTimestamp.trim().isEmpty()) {
         return ""
     }
-    
-    def formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss'Z'")
-    def basicFormatter = DateTimeFormatter.ofPattern("yyyyMMddHHmmss")
-    
-    LocalDateTime dateTime = LocalDateTime.parse(utcTimestamp.trim(), formatter)
-    return dateTime.format(basicFormatter)
+    def ts = utcTimestamp.trim()
+    try {
+        if (ts ==~ /^\\d{4}-\\d{2}-\\d{2}$/) {
+            // date-only ISO -> yyyyMMdd + 000000
+            def date = LocalDate.parse(ts, DateTimeFormatter.ofPattern("yyyy-MM-dd"))
+            return date.format(DateTimeFormatter.ofPattern("yyyyMMdd")) + "000000"
+        } else if (ts ==~ /^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$/) {
+            def formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss'Z'")
+            def basicFormatter = DateTimeFormatter.ofPattern("yyyyMMddHHmmss")
+            def dateTime = LocalDateTime.parse(ts, formatter)
+            return dateTime.format(basicFormatter)
+        } else {
+            // unsupported/unknown format
+            return ""
+        }
+    } catch (Exception e) {
+        return ""
+    }
 }
