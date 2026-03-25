@@ -39,8 +39,15 @@ class Constants {
     // Default filter values for WebPOS SOAP requests.
     static final Map FILTERS = [:]
 
-    // Logging Constant/s
+    // Logging constants
     static final String LOG_RECID = "W3P"
+
+    // W3P keys store constants
+    // We avoid conflicts with other global variables by ff. this standard
+    static final String NEW_BATCHID_PROP_NAME = "[ProjectName]_[Action]_[fnew_batchid]"
+    static final String LAST_BATCHID_PROP_NAME = "[ProjectName]_[Action]_[flast_batchid]"
+    static final String LAST_KEY_PROP_NAME = "[ProjectName]_[Action]_[flast_key]"
+    static final String FDONE_PROP_NAME = "[ProjectName]_[Action]_[fdone]"
 }
 
 /**
@@ -75,13 +82,13 @@ def Message processData(Message message) {
         // 2. Initialize the SOAP Connection
         def soapConn = new HTTPSOAPConnection(credsMap.baseUrl).setId(credsMap.id).setKey(credsMap.key)
 
-        // 3. Prepare the Request Body
-        def request = new SOAPRequestBody(
-            action: Constants.ACTION
-        )
+        // NEW STEP: read previously stored W3P keys from message properties (use empty string when missing)
+        def fnewFromProp = message.getProperty(Constants.NEW_BATCHID_PROP_NAME) ?: ''
 
-        // Use the global FILTERS constant directly so users can override filter values externally
-        request.filters = Constants.FILTERS
+        // 3. Prepare the Request. Takes into account new updates from W3P
+        def request = new SOAPRequestBody(action: Constants.ACTION)
+        request.filters = (Constants.FILTERS instanceof Map) ? new HashMap(Constants.FILTERS) : [:] // using mutable copy of Constants
+        request.filters['flast_batchid'] = fnewFromProp
 
         // 4. Execute paginated SOAP calls (initial post + subsequent pages)
         def pagRes = soapConn.postAllPagination(request)
@@ -97,8 +104,14 @@ def Message processData(Message message) {
         def extractRes = extractW3PTimestampAndBatch(responseXml)
         if (extractRes?.status == 1) {
             def p = extractRes.payload ?: [:]
-            // Do not store sensitive pagination keys as message properties or headers.
-            // Consumers should extract keys from the returned XML if needed.
+            try {
+                message.setProperty(Constants.NEW_BATCHID_PROP_NAME, p.fnew ?: '')
+                message.setProperty(Constants.LAST_BATCHID_PROP_NAME, p.flast ?: '')
+                message.setProperty(Constants.LAST_KEY_PROP_NAME, p.fkey ?: '')
+                message.setProperty(Constants.FDONE_PROP_NAME, p.fdone ?: '')
+            } catch (e) {
+                logger.logBoth(new LogRequest(title: Constants.LOG_RECID, stepName: Constants.STEP_NAME, status: "ERROR", inputPayload: payload, outputPayload: "Failed setting W3P properties: ${e.message}"))
+            }
         } else {
             logger.logBoth(new LogRequest(title: Constants.LOG_RECID, stepName: Constants.STEP_NAME, status: "ERROR", inputPayload: payload, outputPayload: "extractW3PTimestampAndBatch failed: ${extractRes?.message}"))
         }
@@ -789,6 +802,38 @@ def extractW3PTimestampAndBatch(String xml) {
         parser.setFeature("http://xml.org/sax/features/external-parameter-entities", false)
 
         def root = parser.parseText(xml)
+
+        // If the payload is a SOAP envelope with an escaped inner XML inside <Result> then
+        // unescape and reparse the inner XML so we can find the fnew/flast/fkey/fdone nodes.
+        def resultNode = root.'**'.find { it.name() == 'Result' }
+        if (resultNode) {
+            def innerText = resultNode.text()
+            if (innerText) {
+                def unescapeXml = { String s ->
+                    if (s == null) return ''
+                    def x = s
+                    x = x.replaceAll('&lt;', '<')
+                    x = x.replaceAll('&gt;', '>')
+                    x = x.replaceAll('&quot;', '"')
+                    x = x.replaceAll('&apos;', "'")
+                    x = x.replaceAll('&amp;', '&')
+                    return x
+                }
+
+                // If innerText appears escaped (contains &lt;), unescape and try to parse
+                if (innerText.contains('&lt;')) {
+                    try {
+                        def innerUnescaped = unescapeXml(innerText)
+                        root = parser.parseText(innerUnescaped)
+                    } catch (e) {
+                        // ignore and keep original root
+                    }
+                } else {
+                    // Not escaped; maybe already raw XML string — attempt to parse
+                    try { root = parser.parseText(innerText) } catch (e) { /* ignore */ }
+                }
+            }
+        }
 
         def findFirst = { String name ->
             def node = root.'**'.find { it.name() == name }
