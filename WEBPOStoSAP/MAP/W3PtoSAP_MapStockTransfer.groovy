@@ -1,8 +1,11 @@
 /**
- * W3PtoSAP_MapWarehouse.groovy
+ * W3PtoSAP_MapStockTransfer.groovy
  * 
  * Dependencies:
+ * - Misc/Mapper.groovy (Logic refactored and appended below)
  * - Misc/LoggerService.groovy (Logic refactored and appended below)
+ * - Misc/ODataConnection.groovy
+ * - Misc/SOAPConnection.groovy
  */
 import com.sap.gateway.ip.core.customdev.util.Message;
 import groovy.util.XmlSlurper;
@@ -25,9 +28,12 @@ import java.security.cert.X509Certificate
 class Constants {
     static final String W3P_CRED = "[W3P_CRED]"
     static final String W3P_URL = "[W3P_URL]"
-    static final String STEP_NAME = "W3PtoSAP_MapWarehouses"
-    
+    static final String STEP_NAME = "W3PtoSAP_MapStockTransfer"
+
     /**
+     * QUICK NOTE: Mapping Constants here are intended for mappings that do not require
+     * complex orchestration by default. For more complex scenarios see the Remarks below.
+     *
      * Mapping configuration for transforming source records into target objects.
      *
      * Capabilities:
@@ -59,18 +65,33 @@ class Constants {
      * Notes:
      * - Expressions and RESPONSE lookups are resolved at runtime by the mapper.
      * - Use `Constants.CUSTOM_RULES['Path.To.Field'] = { val -> ... }` to post-process resolved values.
+     *
+     * Remarks:
+     * - Multi-call mappings: this mapper file exposes both SOAP (`HTTPSOAPConnection`) and OData
+     *   (`HTTPODataConnection`) helpers. For complex mappings that need to call additional
+     *   APIs (e.g., enrich a record with multiple remote lookups) you can perform those calls
+     *   inside mapping `Closure`s or orchestrate them in a pre-processing step and place
+     *   the results into a `responses` map referenced via `RESPONSE.field` tokens.
+     *
+     * - SAP login / session handling: if a mapping or pre-processing step requires logging
+     *   into SAP, use the provided utilities (see
+     *   the `OData` / `SOAP` connection classes). In an iFlow, add a Content Modifier
+     *   before this mapping step to extract and store the SAP login token (or session) into
+     *   the process variable store; then the mapping code or closures can read that value
+     *   from the variable store or from the `responses` map to attach to downstream calls.
+     *
+     * - LoggerService.ExtractW3PCredentials is a private method. Use extractW3PCredentials() instead
      */
-    static final Map MAPPING = [
-        "WarehouseCode"   : "fsiteid",
-        "WarehouseName"   : "fname",
-        "Inactive"        : "factive_flag",
-    ]
-    static final Map CUSTOM_RULES = [
-        "Inactive": { val -> (val == "0" || val == "tYES") ? "tYES" : "tNO" }
-    ]
+    static final Map MAPPING = [:]
+    static final Map CUSTOM_RULES = [:]
 
     // Logging Constant/s
     static final String LOG_RECID = "W3P"
+
+    // Uncomment these constants if logging in to SAP
+    static final String SESSION_VAR_PROP_NAME = "[B1SESSION]"
+    static final String BASE_URL_PROP_NAME = "[SL_BaseURL]"
+
 }
 
 /**
@@ -109,50 +130,6 @@ def Message processData(Message message) {
 
     // Clear out code in try block if customize
     try {
-        // If the W3P response indicates processing is done (fdone == 1),
-        // short-circuit and return an empty mapping to avoid downstream work.
-        if (isFdoneOne(payload)) {
-            logger.logBoth(new LogRequest(stepName: "SKIP_DONE", title: Constants.LOG_RECID, status: "OK", inputPayload: payload, outputPayload: "fdone == 1 - skipping mapping"))
-            message.setBody(JsonOutput.toJson([]))
-            return message
-        }
-        // 1. Map data -> returns a Result map: [status:1|0, message: '', payload: [...]]
-        def result = extractMappedRecords(
-            payload, 
-            Constants.MAPPING, 
-            Constants.CUSTOM_RULES
-        )
-
-        if (!(result instanceof Map)) {
-            logger.logBoth(new LogRequest(stepName: "MAPPING_FAILURE", title: Constants.LOG_RECID, status: "ERROR", inputPayload: payload, outputPayload: "Mapper returned unexpected type"))
-            return message
-        }
-
-        if (result.status != 1) {
-            logger.logBoth(new LogRequest(stepName: "MAPPING_ERROR", title: Constants.LOG_RECID, status: "ERROR", inputPayload: payload, outputPayload: result.message ?: 'Mapping failed'))
-            return message
-        }
-
-        def mappedRecords = result.payload ?: []
-
-        if (mappedRecords.isEmpty() && payload.trim().startsWith("<")) {
-            logger.logBoth(new LogRequest(stepName: "MAPPING_NO_RECORDS", title: Constants.LOG_RECID, status: "ERROR", inputPayload: payload, outputPayload: "No records found or failed to parse XML <Result>."))
-            return message // Premature return instead of exception
-        }
-
-        // 2. Wrap it in a uniform JSON structure
-        def jsonResult = JsonOutput.toJson(mappedRecords)
-        
-        // 3. Log Success using logBoth and handle result
-        def logResult = logger.logBoth(new LogRequest(stepName: Constants.STEP_NAME, title: Constants.LOG_RECID, status: "OK", inputPayload: payload, outputPayload: JsonOutput.prettyPrint(jsonResult)))
-        
-        if (logResult.status != 1) {
-            // Log the logging failure using logBoth
-            logger.logBoth(new LogRequest(stepName: "PROCESS_LOG_FAILURE", title: Constants.LOG_RECID, status: "ERROR", inputPayload: payload, outputPayload: "LogProcess failed: ${logResult.message}"))
-        }
-        
-        // 4. Set the new JSON body back to the message
-        message.setBody(jsonResult)
         
     } catch (Exception e) {
         // Log Error using logBoth

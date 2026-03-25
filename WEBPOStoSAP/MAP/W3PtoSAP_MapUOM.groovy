@@ -91,20 +91,33 @@ class Constants {
     static final String LOG_RECID = "W3P"
 
     // Uncomment these constants if logging in to SAP
-    // static final String SESSION_VAR_PROP_NAME = "[B1SESSION]"
-    // static final String BASE_URL_PROP_NAME = "[SL_BaseURL]"
+    static final String SESSION_VAR_PROP_NAME = "[B1SESSION]"
+    static final String BASE_URL_PROP_NAME = "[SL_BaseURL]"
 
 }
 
 /**
  * Agnostic Mapping Configuration.
- * Transforms source data structures (XML/JSON) into the target format
- * based on the definitions in the Constants class.
- * 
- * {@code
- * // Example usage in processData:
- * def mappedRecords = extractMappedRecords(payload, Constants.MAPPING, Constants.CUSTOM_RULES)
- * }
+ *
+ * Usage (default):
+ * - Add field mappings to `Constants.MAPPING`. The mapper will automatically
+ *   map source fields to target fields and produce JSON suitable for POST by
+ *   the next flow step.
+ *
+ * Advanced/customized usage:
+ * - Uncomment and populate `Constants.SESSION_VAR_PROP_NAME` and
+ *   `Constants.BASE_URL_PROP_NAME` if your mapping requires an authenticated
+ *   SAP session.
+ * - To supply SAP login/session token, attach a Content Modifier
+ *   before this flow to extract the SAP session into the configured message
+ *   property names (the constants above).
+ * - Remove the entire `try` block inside `processData` and implement your 
+ *   orchestration there (calls, enrichment, batching, etc.).
+ *
+ * Important:
+ * - Do not modify the helper methods below (`extractMappedRecords`, etc.).
+ * - If you need additional helpers, add them only after `processData` so the
+ *   core helpers remain stable and reusable across flows.
  */
 def Message processData(Message message) {
     def logger = new LoggerService(messageLogFactory, message)
@@ -117,118 +130,10 @@ def Message processData(Message message) {
         return message // Premature return instead of exception
     }
 
+    // Clear out code in try block if customize
     try {
-        // Parse SOAP -> Result -> innerXml flow
-        def sl = new XmlSlurper()
-        def envelope = sl.parseText(payload)
-        def innerXml = envelope.Body?.callResponse?.Result?.text() ?: envelope.'**'.find { it.name() == 'Result' }?.text()
-        if (!innerXml) {
-            logger.logBoth(new LogRequest(stepName: Constants.STEP_NAME, title: Constants.LOG_RECID, status: "ERROR", inputPayload: payload, outputPayload: "No <Result> found"))
-            return message
-        }
+    
 
-        // simple unescape of common entities
-        def unescapeXml = { String s ->
-            if (s == null) return ''
-            s.replaceAll('&lt;', '<').replaceAll('&gt;', '>').replaceAll('&quot;', '"').replaceAll('&apos;', "'").replaceAll('&amp;', '&')
-        }
-
-        def inner = unescapeXml(innerXml)
-        def innerRoot = new XmlSlurper().parseText(inner)
-        def records = []
-        try { records = innerRoot.data.record } catch (e) { records = [] }
-
-        // Extract OData base URL and session using helper methods
-        def baseRes = extractBaseUrl(message)
-        def sessRes = extractSessionCookie(message)
-        if (baseRes.status != 1 || sessRes.status != 1) {
-            logger.logBoth(new LogRequest(stepName: Constants.STEP_NAME, title: Constants.LOG_RECID, status: "ERROR", inputPayload: payload, outputPayload: "Missing SL baseUrl or session: ${baseRes.message}, ${sessRes.message}"))
-            return message
-        }
-        def baseUrl = baseRes.payload
-        def sessionCookie = sessRes.payload
-
-        def odata = new HTTPODataConnection(baseUrl).setSessionCookie(sessionCookie)
-
-        // Iterate records and create/patch UoM groups
-        records.each { rec ->
-            def fuomid = rec.fuomid.text()
-            def fname = rec.fname.text()
-            def baseUom = rec.fbase_uom.text()
-
-            // Build defList from <def> nodes
-            def defList = []
-            def uomDefs = rec.'def'
-            uomDefs.each { d ->
-                def fuom = d.fuom.text()
-                def fqty = d.fqty.text()
-                def baseQty = null
-                try { baseQty = new BigDecimal(fqty) } catch (ignored) { baseQty = 0 }
-                def altEntry = addUOM(fuom, message, odata)
-                defList << [
-                    AlternateUoM     : altEntry,
-                    BaseQuantity     : baseQty,
-                    AlternateQuantity: 1
-                ]
-            }
-
-            // ensure base UoM exists
-            def baseUomEntry = addUOM(baseUom, message, odata)
-            if (baseUomEntry == -1) {
-                logger.logBoth(new LogRequest(stepName: Constants.STEP_NAME, title: Constants.LOG_RECID, status: "ERROR", inputPayload: baseUom, outputPayload: "Failed to ensure base UoM"))
-                return message
-            }
-
-            // prepare payload for UoMGroup
-            def payloadMap = [
-                Code                         : fuomid,
-                Name                         : fname,
-                BaseUoM                      : baseUomEntry,
-                UoMGroupDefinitionCollection : defList
-            ]
-
-            // check existing group
-            def query = "UnitOfMeasurementGroups?\$filter=Code%20eq%20'${fuomid}'"
-            // note: HTTPODataConnection expects url without base; pass encoded filter
-            def getReq = [url: "UnitOfMeasurementGroups?\$filter=Code%20eq%20'${fuomid}'"]
-            // Use direct get via HTTPODataConnection
-            def getResp = odata.get(new ODataRequestBody(url: "UnitOfMeasurementGroups?\$filter=Code%20eq%20'${fuomid}'"))
-            if (getResp.status != 1) {
-                logger.logBoth(new LogRequest(stepName: Constants.STEP_NAME, title: Constants.LOG_RECID, status: "ERROR", inputPayload: fuomid, outputPayload: "Failed to query UoM groups: ${getResp.message}"))
-                return message
-            }
-
-            try {
-                if (getResp.payload?.value && getResp.payload.value.size() > 0) {
-                    def ugpEntry = getResp.payload.value[0].AbsEntry
-                    // patch (use helper to send PATCH)
-                    def patchPayload = [ Name: fname ]
-                    message.setProperty("ugpEntry", ugpEntry)
-                    message.setProperty("payload", patchPayload)
-                    message.setProperty("response", getResp.payload)
-                    def patchResp = odata.patch(new ODataRequestBody(url: "UnitOfMeasurementGroups(${ugpEntry})", payload: JsonOutput.toJson(patchPayload)))
-                    if (patchResp?.status != 1) {
-                        logger.logBoth(new LogRequest(stepName: Constants.STEP_NAME, title: Constants.LOG_RECID, status: "ERROR", inputPayload: patchPayload, outputPayload: "PATCH failed: ${patchResp.message}"))
-                        return message
-                    } else {
-                        logger.logBoth(new LogRequest(stepName: Constants.STEP_NAME, title: Constants.LOG_RECID, status: "OK", inputPayload: patchPayload, outputPayload: "Updated UoMGroup ${fuomid} (AbsEntry=${ugpEntry})"))
-                    }
-                } else {
-                    // create
-                    def postResp = odata.post(new ODataRequestBody(url: 'UnitOfMeasurementGroups', payload: JsonOutput.toJson(payloadMap)))
-                    if (postResp.status != 1) {
-                        logger.logBoth(new LogRequest(stepName: Constants.STEP_NAME, title: Constants.LOG_RECID, status: "ERROR", inputPayload: payloadMap, outputPayload: "POST failed: ${postResp.message}"))
-                        return message
-                    }
-                    else {
-                        logger.logBoth(new LogRequest(stepName: Constants.STEP_NAME, title: Constants.LOG_RECID, status: "OK", inputPayload: payloadMap, outputPayload: "Created UoMGroup ${fuomid}"))
-                    }
-                }
-            } catch (Exception e) {
-                logger.logBoth(new LogRequest(stepName: Constants.STEP_NAME, title: Constants.LOG_RECID, status: "ERROR", inputPayload: fuomid, outputPayload: "Exception: ${e.message}"))
-                return message
-            }
-        }
     } catch (Exception e) {
         // Log Error using logBoth
         def stackTrace = e.stackTrace.take(15).join('\n')
@@ -242,42 +147,7 @@ def Message processData(Message message) {
     return message
 }
 
-
-/**
- * Ensure a UnitOfMeasurement exists. Uses provided HTTPODataConnection for calls.
- * Returns AbsEntry (number) on success or -1 on failure.
- */
-def addUOM(String fuom, Message message, HTTPODataConnection odata) {
-    if (!fuom) return -1
-    def logger = new LoggerService(messageLogFactory, message)
-
-    def filter = "UnitOfMeasurements?\$filter=Code%20eq%20'${fuom}'"
-    def resp = odata.get(new ODataRequestBody(url: filter))
-    if (resp?.status != 1) {
-        logger.logBoth(new LogRequest(stepName: Constants.STEP_NAME, title: Constants.LOG_RECID, status: "ERROR", inputPayload: fuom, outputPayload: "Failed to query UnitOfMeasurements: ${resp?.message}"))
-        return -1
-    }
-    if (resp.payload?.value && resp.payload.value.size() > 0) {
-        def existing = resp.payload.value[0].AbsEntry
-        logger.logBoth(new LogRequest(stepName: Constants.STEP_NAME, title: Constants.LOG_RECID, status: "OK", inputPayload: fuom, outputPayload: "Found existing UoM AbsEntry=${existing}"))
-        return existing
-    }
-
-    def payload = [Code: fuom, Name: fuom]
-    def postResp = odata.post(new ODataRequestBody(url: 'UnitOfMeasurements', payload: JsonOutput.toJson(payload)))
-    if (postResp?.status != 1) {
-        logger.logBoth(new LogRequest(stepName: Constants.STEP_NAME, title: Constants.LOG_RECID, status: "ERROR", inputPayload: payload, outputPayload: "Failed to create UoM: ${postResp?.message}"))
-        return -1
-    }
-    def newEntry = postResp.payload?.UomEntry ?: -1
-    logger.logBoth(new LogRequest(stepName: Constants.STEP_NAME, title: Constants.LOG_RECID, status: "OK", inputPayload: payload, outputPayload: "Created UoM ${fuom} AbsEntry=${newEntry}"))
-    return newEntry
-}
-
-
-
-
-
+// Add other methods here for customization
 
 
 
@@ -299,11 +169,14 @@ def addUOM(String fuom, Message message, HTTPODataConnection odata) {
 
 
 // ================================
-// HELPERS
+// HELPER METHODS
+// Do not modify
+
 
 /**
  * Agnostic Payload Processor (Refactored from Mapper.groovy)
- * Dynamically handles both XML (SOAP) and JSON data formats.
+ * Given SOAP XML response (payload), mapping, and mapping rules,
+ * outputs an array of Maps consisting of mapped response
  */
 def extractMappedRecords(String payload, Map mapping, Map customRules = [:]) {
     if (!payload) return [status: 0, message: 'Empty payload', payload: []]
@@ -333,7 +206,7 @@ def extractMappedRecords(String payload, Map mapping, Map customRules = [:]) {
         return m
     }
 
-    // Resolve a single token (either RESPONSE.field or a plain field or literal)
+    // Resolve a single token (plain field)
     // idx: optional index into response records when producing per-record mapped outputs
     def resolveToken = { String token, Map responsesMap, Map currentRecord = null, Integer idx = null ->
         if (!token) return ''
@@ -341,23 +214,6 @@ def extractMappedRecords(String payload, Map mapping, Map customRules = [:]) {
         // literal quoted string
         if ((token.startsWith("\'") && token.endsWith("\'")) || (token.startsWith('"') && token.endsWith('"'))) {
             return token.substring(1, token.length() - 1)
-        }
-
-        // RESPONSE.field lookup
-        def m = token =~ /^([A-Za-z0-9_]+)\.([A-Za-z0-9_]+)$/
-        if (m.matches()) {
-            def rkey = m[0][1]
-            def fname = m[0][2]
-            def entry = responsesMap[rkey]
-            if (!entry) return ''
-            // If an index is provided and the response has multiple records, prefer the indexed record
-            if (idx != null && entry.records && entry.records.size() > idx) {
-                def val = entry.records[idx]?.get(fname)
-                if (val != null && val.toString() != '') return val
-            }
-            // fall back to the first record
-            def rv = entry.first?.get(fname)
-            return rv ?: ''
         }
 
         // current record field
@@ -495,97 +351,49 @@ def extractMappedRecords(String payload, Map mapping, Map customRules = [:]) {
         // - a List -> each element resolved and returned as a list
         // - a Closure -> dynamic constructor invoked as closure(responsesMap, currentRecord, idx)
         // path: dot-delimited key path used to apply customRules (if provided)
-        def resolveMappingValue
-        resolveMappingValue = { def spec, Map responsesMap, Map currentRecord = null, Integer idx = null, String path = null ->
-            if (spec == null) return ''
+    def resolveMappingValue = { def spec, Map responsesMap, Map currentRecord = null, Integer idx = null, String path = null ->
+        if (spec == null) return ''
 
-            if (spec instanceof Closure) {
-                try {
-                    return spec(responsesMap, currentRecord, idx)
-                } catch (e) {
-                    throw new IllegalArgumentException("Mapping closure for '${path ?: 'root'}' threw: ${e.message}")
-                }
-            }
-
-            // Nested map -> build nested object recursively
-            if (spec instanceof Map) {
-                def nested = [:]
-                spec.each { nk, nSpec ->
-                    def childPath = (path ? (path + '.' + nk) : nk.toString())
-                    nested[nk] = resolveMappingValue(nSpec, responsesMap, currentRecord, idx, childPath)
-                }
-                return nested
-            }
-
-            // List -> resolve each element
-            if (spec instanceof List) {
-                return spec.collect { item -> resolveMappingValue(item, responsesMap, currentRecord, idx, path) }
-            }
-
-            // Leaf: string/primitive -> resolve expression and apply customRules if any for full path
-            def resolved = resolveExpression(spec?.toString(), responsesMap, currentRecord, idx)
-            if (path != null && customRules.containsKey(path)) {
-                return customRules[path](resolved)
-            }
-            return resolved ?: ''
-        }
-
-    // Parse XML payload
-    if (payload.trim().startsWith('<')) {
-        def sl = newSafeSlurper()
-        def envelope = sl.parseText(payload)
-
-        // Detect if payload is an aggregated <responses> wrapper
-        def responsesRoot = null
-        if (envelope.name() == 'responses') {
-            responsesRoot = envelope
-        } else {
-            responsesRoot = envelope.'**'.find { it.name() == 'responses' }
-        }
-
-        // Parse SOAP -> Result -> innerXml flow and map records directly from inner XML
-        def innerXml = envelope.Body?.callResponse?.Result?.text() ?: envelope.'**'.find { it.name() == 'Result' }?.text()
-        if (innerXml) {
+        if (spec instanceof Closure) {
             try {
-                // Unescape common XML entities that were placed into the Result element
-                def unescapeXml = { String s ->
-                    if (s == null) return ''
-                    def x = s
-                    x = x.replaceAll('&lt;', '<')
-                    x = x.replaceAll('&gt;', '>')
-                    x = x.replaceAll('&quot;', '"')
-                    x = x.replaceAll('&apos;', "'")
-                    x = x.replaceAll('&amp;', '&')
-                    return x
-                }
-
-                def innerUnescaped = unescapeXml(innerXml)
-                def innerRoot = newSafeSlurper().parseText(innerUnescaped)
-                def gRecords = []
-                try { gRecords = innerRoot.data.record } catch (e) { gRecords = [] }
-
-                def mappedList = gRecords.collect { rec ->
-                    def recMap = recordToMap(rec)
-                    def mapped = [:]
-                    mapping.each { target, sourceSpec ->
-                        mapped[target] = resolveMappingValue(sourceSpec, [:], recMap, null, target)
-                    }
-                    mapped
-                }
-                return [status: 1, message: 'OK', payload: mappedList]
-            } catch (IllegalArgumentException e) {
-                return [status: 0, message: "Mapping error: ${e.message}", payload: []]
-            } catch (Exception e) {
-                return [status: 0, message: "Failed to parse inner XML: ${e.message}", payload: []]
+                return spec(responsesMap, currentRecord, idx)
+            } catch (e) {
+                throw new IllegalArgumentException("Mapping closure for '${path ?: 'root'}' threw: ${e.message}")
             }
         }
 
-        // No <Result> or failed to parse it: attempt to read records directly from the envelope
-        def root = envelope
-        def rawRecords = []
-        try { rawRecords = root.data.record.collect { it } } catch (e) { rawRecords = [] }
+        // Nested map -> build nested object recursively
+        if (spec instanceof Map) {
+            def nested = [:]
+            spec.each { nk, nSpec ->
+                def childPath = (path ? (path + '.' + nk) : nk.toString())
+                nested[nk] = resolveMappingValue(nSpec, responsesMap, currentRecord, idx, childPath)
+            }
+            return nested
+        }
+
+        // List -> resolve each element
+        if (spec instanceof List) {
+            return spec.collect { item -> resolveMappingValue(item, responsesMap, currentRecord, idx, path) }
+        }
+
+        // Leaf: string/primitive -> resolve expression and apply customRules if any for full path
+        def resolved = resolveExpression(spec?.toString(), responsesMap, currentRecord, idx)
+        if (path != null && customRules.containsKey(path)) {
+            return customRules[path](resolved)
+        }
+        return resolved ?: ''
+    }
+
+    // Parse SOAP XML payload using centralized extractor
+    if (payload.trim().startsWith('<')) {
         try {
-            def mappedList = rawRecords.collect { rec ->
+            def records = extractRecordsFromPayload(payload)
+            if (records == null) {
+                return [status: 0, message: 'Invalid SOAP payload: missing XML declaration or SOAP Envelope', payload: []]
+            }
+
+            def mappedList = records.collect { rec ->
                 def recMap = (rec instanceof GPathResult) ? recordToMap(rec) : (rec instanceof Map ? rec : [value: rec.toString()])
                 def mapped = [:]
                 mapping.each { target, sourceSpec ->
@@ -596,39 +404,138 @@ def extractMappedRecords(String payload, Map mapping, Map customRules = [:]) {
             return [status: 1, message: 'OK', payload: mappedList]
         } catch (IllegalArgumentException e) {
             return [status: 0, message: "Mapping error: ${e.message}", payload: []]
+        } catch (Exception e) {
+            return [status: 0, message: "Failed to parse records: ${e.message}", payload: []]
         }
     } else {
-        // JSON path (unchanged)
-        def jsonSlurper = new JsonSlurper()
-        def root = jsonSlurper.parseText(payload)
-        def records = []
-        if (root instanceof List) {
-            records = root
-        } else if (root.params?.data?.record) {
-            records = root.params.data.record
-        } else if (root.data?.record) {
-            records = root.data.record
-        } else if (root.record) {
-            records = root.record
-        } else {
-            records = [root]
-        }
-
-        try {
-            def mappedList = records.collect { record ->
-                def recMap = (record instanceof Map) ? record : record
-                def mapped = [:]
-                mapping.each { target, sourceSpec ->
-                    mapped[target] = resolveMappingValue(sourceSpec, [:], recMap, null, target)
-                }
-                mapped
-            }
-            return [status: 1, message: 'OK', payload: mappedList]
-        } catch (IllegalArgumentException e) {
-            return [status: 0, message: "Mapping error: ${e.message}", payload: []]
-        }
+        // Only SOAP/XML payloads are supported by this mapper.
+        return [status: 0, message: 'Invalid payload: only SOAP/XML (SOAP envelope) supported', payload: []]
     }
 }
+
+
+/**
+ * Detect whether the payload (SOAP envelope or inner Result) contains
+ * an <fdone> element with value '1'. This is used to skip mapping when
+ * W3P indicates processing is finished.
+ */
+def isFdoneOne(String payload) {
+    if (!payload) return false
+    payload = payload.toString()
+
+    def newSafeSlurper = {
+        def sp = new XmlSlurper()
+        try {
+            sp.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true)
+            sp.setFeature("http://xml.org/sax/features/external-general-entities", false)
+            sp.setFeature("http://xml.org/sax/features/external-parameter-entities", false)
+        } catch (e) {
+            // ignore if not supported
+        }
+        return sp
+    }
+
+    def unescapeXml = { String s ->
+        if (s == null) return ''
+        def x = s
+        x = x.replaceAll('&lt;', '<')
+        x = x.replaceAll('&gt;', '>')
+        x = x.replaceAll('&quot;', '"')
+        x = x.replaceAll('&apos;', "'")
+        x = x.replaceAll('&amp;', '&')
+        return x
+    }
+
+    def trimmed = payload.trim()
+    if (! (trimmed.startsWith('<?xml') || trimmed.toLowerCase().startsWith('<soapenv:') || trimmed.toLowerCase().startsWith('<soap:')) ) {
+        // Not XML/SOAP — no fdone to inspect
+        return false
+    }
+
+    try {
+        def sl = newSafeSlurper()
+        def envelope = sl.parseText(payload)
+
+        // Look for direct <fdone> in envelope
+        def direct = envelope.'**'.find { it.name() == 'fdone' }
+        if (direct && direct.text()?.trim() == '1') return true
+
+        // If there's an inner <Result> string, unescape and parse it then search for fdone
+        def innerXml = envelope.Body?.callResponse?.Result?.text() ?: envelope.'**'.find { it.name() == 'Result' }?.text()
+        if (innerXml) {
+            def innerUnescaped = unescapeXml(innerXml)
+            try {
+                def innerRoot = newSafeSlurper().parseText(innerUnescaped)
+                def innerFdone = innerRoot.'**'.find { it.name() == 'fdone' }
+                if (innerFdone && innerFdone.text()?.trim() == '1') return true
+            } catch (e) {
+                // ignore parsing errors of inner content
+            }
+        }
+    } catch (e) {
+        return false
+    }
+
+    return false
+}
+
+/**
+ * Extracts <record> nodes from a SOAP/XML payload.
+ * Returns: List of GPathResult record nodes, empty list when none found,
+ * or null when payload is not a SOAP/XML envelope (invalid SOAP).
+ */
+def extractRecordsFromPayload(String payload) {
+    if (!payload) return []
+    payload = payload.toString()
+
+    def newSafeSlurper = {
+        def sp = new XmlSlurper()
+        try {
+            sp.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true)
+            sp.setFeature("http://xml.org/sax/features/external-general-entities", false)
+            sp.setFeature("http://xml.org/sax/features/external-parameter-entities", false)
+        } catch (e) {
+            // ignore if not supported
+        }
+        return sp
+    }
+
+    def unescapeXml = { String s ->
+        if (s == null) return ''
+        def x = s
+        x = x.replaceAll('&lt;', '<')
+        x = x.replaceAll('&gt;', '>')
+        x = x.replaceAll('&quot;', '"')
+        x = x.replaceAll('&apos;', "'")
+        x = x.replaceAll('&amp;', '&')
+        return x
+    }
+
+    def trimmed = payload.trim()
+    if (! (trimmed.startsWith('<?xml') || trimmed.toLowerCase().startsWith('<soapenv:') || trimmed.toLowerCase().startsWith('<soap:')) ) {
+        return null
+    }
+
+    def sl = newSafeSlurper()
+    def envelope = sl.parseText(payload)
+
+    // Prefer inner <Result> content when present (may contain escaped inner XML)
+    def innerXml = envelope.Body?.callResponse?.Result?.text() ?: envelope.'**'.find { it.name() == 'Result' }?.text()
+    if (innerXml) {
+        def innerUnescaped = unescapeXml(innerXml)
+        def innerRoot = newSafeSlurper().parseText(innerUnescaped)
+        def gRecords = []
+        try { gRecords = innerRoot.data.record } catch (e) { gRecords = [] }
+        return gRecords.collect { it }
+    }
+
+    // Fallback: try to read <data><record> directly from envelope
+    def rawRecords = []
+    try { rawRecords = envelope.data.record.collect { it } } catch (e) { rawRecords = [] }
+    return rawRecords
+}
+
+
 
 
 
