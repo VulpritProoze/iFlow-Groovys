@@ -39,6 +39,17 @@ class Constants {
     static final String LOG_RECID = "W3P"
 }
 
+
+/**
+ * Process the incoming response and post all contained records to SAP in one bulk request.
+ *
+ * Parses the message body (SOAP or JSON), extracts all <record> elements, converts them
+ * to JSON, and submits them as a single multipart OData $batch (changeset) POST.
+ * Expects `SESSION_VAR_PROP_NAME` and `BASE_URL_PROP_NAME` to be available as message
+ * properties for session and service endpoint. Logs summary and details of the batch result.
+ *
+ * Note: This code is not customizable.
+ */
 def Message processData(Message message) {
     def logger = new LoggerService(messageLogFactory, message)
 

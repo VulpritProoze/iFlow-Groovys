@@ -43,6 +43,22 @@ class Constants {
     static final String LOG_RECID = "W3P"
 }
 
+/**
+ * Processes WebPOS endpoints by issuing GET requests and aggregating their responses.
+ *
+ * Behavior:
+ * - Performs the initial GET and continues requesting subsequent pages until
+ *   the W3P service indicates completion.
+ * - Builds a consolidated XML containing all <record> elements collected from
+ *   each page; only the final page's control keys are appended:
+ *   `fnew_batchid`, `flast_batchid`, `flast_key`, `fdone`.
+ * - The last 4 keys are also set to property to be stored in global variable store
+ *   to be pulled again on next cycle to ensure the old cycle does not requery same
+ *   response (NOT YET IMPLEMENTED).
+ *
+ * @param message the incoming iFlow Message
+ * @return the iFlow Message with the aggregated SOAP-wrapped XML set as body
+ */
 def Message processData(Message message) {
     def logger = new LoggerService(messageLogFactory, message)
     def payload = message.getBody(java.lang.String)
@@ -91,7 +107,6 @@ def Message processData(Message message) {
 
     } catch (Exception e) {
         logger.logBoth(new LogRequest(title: Constants.LOG_RECID, stepName: Constants.STEP_NAME, status: "ERROR", inputPayload: payload, outputPayload: "Exception: ${e.message}\nStacktrace: ${e.stackTrace.take(5).join('\n')}"))
-        return message
     }
     
     return message

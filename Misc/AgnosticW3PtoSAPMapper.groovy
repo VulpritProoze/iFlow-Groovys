@@ -31,8 +31,8 @@ class Constants {
     static final String STEP_NAME = "W3PtoSAP_[StepName]"
 
     /**
-     * QUICK NOTE: Mapping Constants here are intended for mappings that do not require
-     * complex orchestration by default. For more complex scenarios see the Remarks below.
+     * QUICK NOTE: This mapping constant is not intended for customized mapping. This is only for simple
+     * mappings.
      *
      * Mapping configuration for transforming source records into target objects.
      *
@@ -66,20 +66,6 @@ class Constants {
      * - Expressions and RESPONSE lookups are resolved at runtime by the mapper.
      * - Use `Constants.CUSTOM_RULES['Path.To.Field'] = { val -> ... }` to post-process resolved values.
      *
-     * Remarks:
-     * - Multi-call mappings: this mapper file exposes both SOAP (`HTTPSOAPConnection`) and OData
-     *   (`HTTPODataConnection`) helpers. For complex mappings that need to call additional
-     *   APIs (e.g., enrich a record with multiple remote lookups) you can perform those calls
-     *   inside mapping `Closure`s or orchestrate them in a pre-processing step and place
-     *   the results into a `responses` map referenced via `RESPONSE.field` tokens.
-     *
-     * - SAP login / session handling: if a mapping or pre-processing step requires logging
-     *   into SAP, use the provided utilities (see
-     *   the `OData` / `SOAP` connection classes). In an iFlow, add a Content Modifier
-     *   before this mapping step to extract and store the SAP login token (or session) into
-     *   the process variable store; then the mapping code or closures can read that value
-     *   from the variable store or from the `responses` map to attach to downstream calls.
-     *
      * - LoggerService.ExtractW3PCredentials is a private method. Use extractW3PCredentials() instead
      */
     static final Map MAPPING = [:]
@@ -96,13 +82,26 @@ class Constants {
 
 /**
  * Agnostic Mapping Configuration.
- * Transforms source data structures (XML/JSON) into the target format
- * based on the definitions in the Constants class.
- * 
- * {@code
- * // Example usage in processData:
- * def mappedRecords = extractMappedRecords(payload, Constants.MAPPING, Constants.CUSTOM_RULES)
- * }
+ *
+ * Usage (default):
+ * - Add field mappings to `Constants.MAPPING`. The mapper will automatically
+ *   map source fields to target fields and produce JSON suitable for POST by
+ *   the next flow step.
+ *
+ * Advanced/customized usage:
+ * - Uncomment and populate `Constants.SESSION_VAR_PROP_NAME` and
+ *   `Constants.BASE_URL_PROP_NAME` if your mapping requires an authenticated
+ *   SAP session.
+ * - To supply SAP login/session token, attach a Content Modifier
+ *   before this flow to extract the SAP session into the configured message
+ *   property names (the constants above).
+ * - Remove the entire `try` block inside `processData` and implement your 
+ *   orchestration there (calls, enrichment, batching, etc.).
+ *
+ * Important:
+ * - Do not modify the helper methods below (`extractMappedRecords`, etc.).
+ * - If you need additional helpers, add them only after `processData` so the
+ *   core helpers remain stable and reusable across flows.
  */
 def Message processData(Message message) {
     def logger = new LoggerService(messageLogFactory, message)
