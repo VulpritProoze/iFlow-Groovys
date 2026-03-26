@@ -30,6 +30,9 @@ class Constants {
     static final String W3P_URL = "[W3P_URL]"
     static final String STEP_NAME = "W3PtoSAP_[StepName]"
 
+    // For FDone checking
+    static final String LAST_BATCHID_PROP_NAME = "[ProjectName]_[Action]_[flast_batchid]"
+
     /**
      * QUICK NOTE: This mapping constant is not intended for customized mapping. This is only for simple
      * mappings.
@@ -104,20 +107,32 @@ class Constants {
  *   core helpers remain stable and reusable across flows.
  */
 def Message processData(Message message) {
-    def logger = new LoggerService(messageLogFactory, message)
-    def payload = message.getBody(java.lang.String)
-    
-    // Extract W3P URL to initialize SOAP connection
-    def credsMap = LoggerService.extractW3PCredentials()
-    if (credsMap.status != 1) {
-        logger.logInternal(new LogRequest(stepName: "CREDENTIAL_FAILURE", title: Constants.LOG_RECID, status: "ERROR", inputPayload: payload, outputPayload: credsMap.message))
-        return message // Premature return instead of exception
+    def logger = LoggerService(messageLogFactory, message)
+    try {
+        logger.injectW3PCredentials()
+    } catch {
+        logger.logInternal(new LogRequest(stepName: "${Constants.STEP_NAME}_LOGGER_FAILURE", title: Constants.LOG_RECID, status: "ERROR", inputPayload: payload, outputPayload: "LoggerService failed: ${loggerStatus.message}"))
+    }
+
+    def payload = ''
+    def reader = message.getBody(java.io.Reader)
+    if (reader != null) {
+        try {
+            payload = reader.getText() ?: ''
+        } finally {
+            try { reader.close() } catch (e) { /* ignore close errors */ }
+        }
+    } else {
+        payload = (message.getBody(java.lang.String) ?: '')
     }
 
     // If the W3P response indicates processing is done (fdone == 1),
     // short-circuit and return an empty mapping to avoid downstream work.
-    if (isFdoneOne(payload)) {
-        logger.logBoth(new LogRequest(stepName: "SKIP_DONE", title: Constants.LOG_RECID, status: "OK", inputPayload: payload, outputPayload: "fdone == 1 - skipping mapping"))
+    // Extract last-batch id property and pass it to the fdone checker so
+    // we can additionally validate the payload's <flast_batchid>.
+    def flastBatchProp = message.getProperty(Constants.LAST_BATCHID_PROP_NAME)
+    if (isFdoneOne(payload, flastBatchProp)) {
+        logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_FDONE", title: Constants.LOG_RECID, status: "OK", inputPayload: payload, outputPayload: "fdone == 1 - skipping mapping"))
         message.setBody(JsonOutput.toJson([]))
         return message
     }
@@ -146,18 +161,14 @@ def Message processData(Message message) {
 
         // 2. Wrap it in a uniform JSON structure
         def jsonResult = JsonOutput.toJson(mappedRecords)
-        
-        // 3. Log Success using logBoth and handle result
-        def logResult = logger.logBoth(new LogRequest(stepName: Constants.STEP_NAME, title: Constants.LOG_RECID, status: "OK", inputPayload: payload, outputPayload: JsonOutput.prettyPrint(jsonResult)))
-        
         if (logResult.status != 1) {
-            // Log the logging failure using logBoth
             logger.logBoth(new LogRequest(stepName: "PROCESS_LOG_FAILURE", title: Constants.LOG_RECID, status: "ERROR", inputPayload: payload, outputPayload: "LogProcess failed: ${logResult.message}"))
         }
         
-        // 4. Set the new JSON body back to the message
+        // If needed be, do not remove these two lines of code when customizing. Set the result of the custom mapping
+        // to a jsonResult instead
         message.setBody(jsonResult)
-        
+        def logResult = logger.logBoth(new LogRequest(stepName: Constants.STEP_NAME, title: Constants.LOG_RECID, status: "OK", inputPayload: payload, outputPayload: JsonOutput.prettyPrint(jsonResult))) 
     } catch (Exception e) {
         // Log Error using logBoth
         def stackTrace = e.stackTrace.take(15).join('\n')
@@ -443,7 +454,7 @@ def extractMappedRecords(String payload, Map mapping, Map customRules = [:]) {
  * an <fdone> element with value '1'. This is used to skip mapping when
  * W3P indicates processing is finished.
  */
-def isFdoneOne(String payload) {
+def isFdoneOne(String payload, String flastBatchId = null) {
     if (!payload) return false
     payload = payload.toString()
 
@@ -480,9 +491,24 @@ def isFdoneOne(String payload) {
         def sl = newSafeSlurper()
         def envelope = sl.parseText(payload)
 
+        // Helper to validate flast_batchid presence/equality
+        def validateFlast = { root ->
+            def flast = root.'**'.find { it.name() == 'flast_batchid' || it.name() == 'flastbatchid' }?.text()?.trim()
+            if (flast) {
+                if (flastBatchId) {
+                    return (flast == flastBatchId)
+                }
+            }
+            // flast not present => fail stronger check
+            return false
+        }
+
         // Look for direct <fdone> in envelope
         def direct = envelope.'**'.find { it.name() == 'fdone' }
-        if (direct && direct.text()?.trim() == '1') return true
+        if (direct && direct.text()?.trim() == '1') {
+            // require flast_batchid in payload and optionally match provided property
+            return validateFlast(envelope)
+        }
 
         // If there's an inner <Result> string, unescape and parse it then search for fdone
         def innerXml = envelope.Body?.callResponse?.Result?.text() ?: envelope.'**'.find { it.name() == 'Result' }?.text()
@@ -491,7 +517,9 @@ def isFdoneOne(String payload) {
             try {
                 def innerRoot = newSafeSlurper().parseText(innerUnescaped)
                 def innerFdone = innerRoot.'**'.find { it.name() == 'fdone' }
-                if (innerFdone && innerFdone.text()?.trim() == '1') return true
+                if (innerFdone && innerFdone.text()?.trim() == '1') {
+                    return validateFlast(innerRoot)
+                }
             } catch (e) {
                 // ignore parsing errors of inner content
             }
@@ -608,6 +636,9 @@ class LogRequest {
 class LoggerService {
     def messageLog
     def correlationId
+    private String w3pId = null
+    private String w3pKey = null
+    private String w3pBaseUrl = null
 
     // Valid Log Statuses
     public static final List<String> VALID_STATUSES = ["OK", "ERROR"]
@@ -660,6 +691,10 @@ class LoggerService {
      * @return Map with status (1: success, 0: validation error, -1: system/server error), message, and payload.
      */
     def logProcess(LogRequest request) {
+        if (w3pId == null || w3pBaseUrl == null || w3pKey == null) {
+            return [status: 0, message: "Missing W3P Credentials. LogProcess cannot be used"]
+        }
+
         // Validate Status
         String status = request.status?.toUpperCase()
         if (!(status in VALID_STATUSES)) {
@@ -673,22 +708,15 @@ class LoggerService {
         }
 
         try {
-            // Credentials extraction handled automatically via Secure Store
-            def credsMap = extractW3PCredentials()
-            if (credsMap.status != 1) {
-                return credsMap
-            }
-
             String dataContent = """
                     <fstatus_flag>${status}</fstatus_flag>
                     <frecordid>${recordId}</frecordid>
                     <finput_param>Step: ${request.stepName}\nTitle: ${request.title}\n\n${escapeXml(request.inputPayload)}</finput_param>
                     <foutput_param>${escapeXml(request.outputPayload)}</foutput_param>
             """.trim()
+            String soapEnvelope = buildSoapEnvelope("POST_LOG", this.w3pId, this.w3pKey, dataContent)
 
-            String soapEnvelope = buildSoapEnvelope("POST_LOG", credsMap.id, credsMap.key, dataContent)
-
-            return postSoap(credsMap.baseUrl, soapEnvelope)
+            return postSoap(this.w3pBaseUrl, soapEnvelope)
         } catch (Exception e) {
             return [status: -1, message: "LoggerService: logProcess error: ${e.message}"]
         }
@@ -778,44 +806,41 @@ class LoggerService {
     }
 
     /**
-     * Internal helper to extract W3P credentials from the SAP Secure Store.
+     * Internal helper to inject W3P credentials.
      * Defined inside the class to ensure it's accessible to class methods.
      * @return Map with credentials or error structure.
      */
-    private static Map extractW3PCredentials() {
-        try {
-            def service = ITApiFactory.getService(SecureStoreService.class, null)
-            if (service == null) {
-                return [status: -1, message: "SecureStoreService is not available."]
-            }
-
-            // Extraction lambda/helper for internal use
-            def getCreds = { String key ->
-                def creds = service.getUserCredential(key)
-                if (creds == null) {
-                    return null
-                }
-                return creds
-            }
-
-            def w3pCreds = getCreds(Constants.W3P_CRED)
-            if (w3pCreds == null) return [status: -1, message: "Credential '${Constants.W3P_CRED}' not found in Security Material."]
-            
-            def w3pUrlCreds = getCreds(Constants.W3P_URL)
-            if (w3pUrlCreds == null) return [status: -1, message: "Credential '${Constants.W3P_URL}' not found in Security Material."]
-
-            return [
-                status: 1,
-                id: w3pCreds.getUsername(),
-                key: new String(w3pCreds.getPassword()),
-                baseUrl: new String(w3pUrlCreds.getPassword())
-            ]
-        } catch (Exception e) {
-            return [status: -1, message: "Error extracting credentials: ${e.message}"]
+    private Map injectW3PCredentials() {
+        def service = ITApiFactory.getService(SecureStoreService.class, null)
+        if (service == null) {
+            throw IllegalStateException("SecureStoreService is not available.")
         }
+
+        // Extraction lambda/helper for internal use
+        def getCreds = { String key ->
+            def creds = service.getUserCredential(key)
+            if (creds == null) {
+                return null
+            }
+            return creds
+        }
+
+        def w3pCreds = getCreds(Constants.W3P_CRED)
+        if (w3pCreds == null) throw IllegalStateException("Credential '${Constants.W3P_CRED}' not found in Security Material.")
+        
+        def w3pUrlCreds = getCreds(Constants.W3P_URL)
+        if (w3pUrlCreds == null) throw IllegalStateException("Credential '${Constants.W3P_URL}' not found in Security Material.")
+
+        // Set private instance variables; do NOT return credentials in the response
+        this.w3pId = w3pCreds.getUsername()
+        this.w3pKey = new String(w3pCreds.getPassword())
+        this.w3pBaseUrl = new String(w3pUrlCreds.getPassword())
+
+        return this
     }
 
 }
+
 
 
 /**
@@ -1331,34 +1356,22 @@ class HTTPODataConnection {
 
 
 /**
- * Standalone method to extract SessionId from a Message Property.
- * Returns standardized Result Map.
- *
- * Usage in another script:
- * def cookieMap = extractSessionCookie(message)
+ * For extracting Service Layer credentials
+ * Returns map with status/message and the values as named items (no `payload` key).
+ * Example success: [status:1, message:'Success', sessionCookie: '...', baseUrl: '...']
  */
-def extractSessionCookie(Message message) {
+def extractSLCredentials(Message message) {
     String sessionCookie = message.getProperty(Constants.SESSION_VAR_PROP_NAME)
-    
+    String baseUrl = message.getProperty(Constants.BASE_URL_PROP_NAME)
+
     if (!sessionCookie) {
         return [status: -1, message: "SessionCookie is missing."]
     }
-    return [status: 1, message: "Success", payload: sessionCookie]
-}
-
-/**
- * Extracts the BaseUrl from a Message Property.
- * 
- * @param message The SAP CI Message object.
- * @return Map Result structure with status, message, payload.
- */
-def extractBaseUrl(Message message) {
-    String baseUrl = message.getProperty(Constants.BASE_URL_PROP_NAME)
-
     if (!baseUrl) {
         return [status: -1, message: "BaseUrl is missing."]
     }
-    return [status: 1, message: "Success", payload: baseUrl]
+
+    return [status: 1, message: "Success", sessionCookie: sessionCookie, baseUrl: baseUrl]
 }
 
 
