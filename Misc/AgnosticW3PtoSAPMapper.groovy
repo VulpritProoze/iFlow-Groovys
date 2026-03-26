@@ -114,21 +114,18 @@ def Message processData(Message message) {
         return message // Premature return instead of exception
     }
 
+    // If the W3P response indicates processing is done (fdone == 1),
+    // short-circuit and return an empty mapping to avoid downstream work.
+    if (isFdoneOne(payload)) {
+        logger.logBoth(new LogRequest(stepName: "SKIP_DONE", title: Constants.LOG_RECID, status: "OK", inputPayload: payload, outputPayload: "fdone == 1 - skipping mapping"))
+        message.setBody(JsonOutput.toJson([]))
+        return message
+    }
+
     // Clear out code in try block if customize
     try {
-        // If the W3P response indicates processing is done (fdone == 1),
-        // short-circuit and return an empty mapping to avoid downstream work.
-        if (isFdoneOne(payload)) {
-            logger.logBoth(new LogRequest(stepName: "SKIP_DONE", title: Constants.LOG_RECID, status: "OK", inputPayload: payload, outputPayload: "fdone == 1 - skipping mapping"))
-            message.setBody(JsonOutput.toJson([]))
-            return message
-        }
         // 1. Map data -> returns a Result map: [status:1|0, message: '', payload: [...]]
-        def result = extractMappedRecords(
-            payload, 
-            Constants.MAPPING, 
-            Constants.CUSTOM_RULES
-        )
+        def result = extractMappedRecords(payload, Constants.MAPPING, Constants.CUSTOM_RULES)
 
         if (!(result instanceof Map)) {
             logger.logBoth(new LogRequest(stepName: "MAPPING_FAILURE", title: Constants.LOG_RECID, status: "ERROR", inputPayload: payload, outputPayload: "Mapper returned unexpected type"))
