@@ -13,32 +13,20 @@ class Constants {
 }
 
 /**
- * Standalone method to extract SessionId from a Message Property.
- * Returns standardized Result Map.
- *
- * Usage in another script:
- * def cookieMap = extractSessionCookie(message)
+ * For extracting Service Layer credentials
+ * Returns map with status/message and the values as named items (no `payload` key).
+ * Example success: [status:1, message:'Success', sessionCookie: '...', baseUrl: '...']
  */
-def extractSessionCookie(Message message) {
+def extractSLCredentials(Message message) {
     String sessionCookie = message.getProperty(Constants.SESSION_VAR_PROP_NAME)
-    
+    String baseUrl = message.getProperty(Constants.BASE_URL_PROP_NAME)
+
     if (!sessionCookie) {
         return [status: -1, message: "SessionCookie is missing."]
     }
-    return [status: 1, message: "Success", payload: sessionCookie]
-}
-
-/**
- * Extracts the BaseUrl from a Message Property.
- * 
- * @param message The SAP CI Message object.
- * @return Map Result structure with status, message, payload.
- */
-def extractBaseUrl(Message message) {
-    String baseUrl = message.getProperty(Constants.BASE_URL_PROP_NAME)
-
     if (!baseUrl) {
         return [status: -1, message: "BaseUrl is missing."]
     }
-    return [status: 1, message: "Success", payload: baseUrl]
+
+    return [status: 1, message: "Success", sessionCookie: sessionCookie, baseUrl: baseUrl]
 }
