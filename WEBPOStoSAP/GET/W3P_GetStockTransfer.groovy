@@ -67,7 +67,17 @@ class Constants {
  */
 def Message processData(Message message) {
     def logger = new LoggerService(messageLogFactory, message)
-    def payload = message.getBody(java.lang.String)
+    def payload = ''
+    def reader = message.getBody(java.io.Reader)
+    if (reader != null) {
+        try {
+            payload = reader.getText() ?: ''
+        } finally {
+            try { reader.close() } catch (e) { /* ignore close errors */ }
+        }
+    } else {
+        payload = (message.getBody(java.lang.String) ?: '')
+    }
     
     // 1. Extract W3P Credentials from Secure Store
     // Using the logic from SC_ExtractW3PCredentials.groovy to get Id, Key and BaseUrl

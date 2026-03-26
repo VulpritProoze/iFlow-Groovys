@@ -121,13 +121,31 @@ class Constants {
  */
 def Message processData(Message message) {
     def logger = new LoggerService(messageLogFactory, message)
-    def payload = message.getBody(java.lang.String)
+    def payload = ''
+    def reader = message.getBody(java.io.Reader)
+    if (reader != null) {
+        try {
+            payload = reader.getText() ?: ''
+        } finally {
+            try { reader.close() } catch (e) { /* ignore close errors */ }
+        }
+    } else {
+        payload = (message.getBody(java.lang.String) ?: '')
+    }
     
     // Extract W3P URL to initialize SOAP connection
     def credsMap = LoggerService.extractW3PCredentials()
     if (credsMap.status != 1) {
         logger.logInternal(new LogRequest(stepName: "CREDENTIAL_FAILURE", title: Constants.LOG_RECID, status: "ERROR", inputPayload: payload, outputPayload: credsMap.message))
         return message // Premature return instead of exception
+    }
+
+    // If the W3P response indicates processing is done (fdone == 1),
+    // short-circuit and return an empty mapping to avoid downstream work.
+    if (isFdoneOne(payload)) {
+        logger.logBoth(new LogRequest(stepName: "SKIP_DONE", title: Constants.LOG_RECID, status: "OK", inputPayload: payload, outputPayload: "fdone == 1 - skipping mapping"))
+        message.setBody(JsonOutput.toJson([]))
+        return message
     }
 
     // Clear out code in try block if customize
