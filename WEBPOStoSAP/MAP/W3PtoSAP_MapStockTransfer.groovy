@@ -760,8 +760,6 @@ def extractRecordsFromPayload(String payload) {
 /**
  * LoggerService.groovy
  * 
- * Dependencies:
- * - ExtractW3PCredentials.groovy
  */
 /*
 ** This service handles dual-layered logging for SAP Cloud Integration (iFlows).
@@ -769,7 +767,6 @@ def extractRecordsFromPayload(String payload) {
 ** logProcess: Sends a SOAP-structured log to an external service (W3P) for process tracking.
 ** logBoth: Executes both internal and process logging simultaneously.
 */
-
 
 /**
  * Data Transfer Object (DTO) for structured logging.
@@ -795,7 +792,6 @@ class LogRequest {
  * 
  * Example usage:
  * LoggerService logger = new LoggerService(messageLogFactory, message)
- * logger.setSoapConnection(new HTTPSOAPConnection(baseUrl))
  * logger.logInternal(new LogRequest(stepName: "Step1", title: "WAREHOUSE", status: "OK", inputPayload: "data"))
  * logger.logBoth("WAREHOUSE", "ProcessStep", "OK", input, output)
  */
@@ -976,7 +972,7 @@ class LoggerService {
      * Defined inside the class to ensure it's accessible to class methods.
      * @return Map with credentials or error structure.
      */
-    private Map injectW3PCredentials() {
+    private def injectW3PCredentials() {
         def service = ITApiFactory.getService(SecureStoreService.class, null)
         if (service == null) {
             throw IllegalStateException("SecureStoreService is not available.")
@@ -1006,6 +1002,7 @@ class LoggerService {
     }
 
 }
+
 
 
 
