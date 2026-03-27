@@ -139,13 +139,6 @@ def Message processData(Message message) {
     } else {
         payload = (message.getBody(java.lang.String) ?: '')
     }
-    
-    // Extract W3P URL to initialize SOAP connection
-    def credsMap = extractW3PCredentials()
-    if (credsMap.status != 1) {
-        logger.logInternal(new LogRequest(stepName: "CREDENTIAL_FAILURE", title: Constants.LOG_RECID, status: "ERROR", inputPayload: payload, outputPayload: credsMap.message))
-        return message // Premature return instead of exception
-    }
 
     // If the W3P response indicates processing is done (fdone == 1),
     // short-circuit and return an empty mapping to avoid downstream work.
