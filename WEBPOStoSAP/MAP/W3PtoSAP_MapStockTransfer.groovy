@@ -158,8 +158,16 @@ def Message processData(Message message) {
         return message
     }
 
-    // Custom mapping: build StockTransfer payload(s) from incoming records
+    // Clear out code in try block if customize
     try {
+        /*
+         * Flow:
+         * 1. Build SAP /StockTransfer payload with caveats
+         * 2. Build StockTransferLines list: 
+         *      -> then put within StockTransfer
+         *      -> requires API calls to SAP (checking UoM and Items)
+         * 3. Output mappedRecord to body for processing of poster process
+        */
         def records = extractRecordsFromPayload(payload)
         if (records == null) {
             logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_NO_XML", title: Constants.LOG_RECID, status: "ERROR", inputPayload: payload, outputPayload: "Invalid SOAP/XML payload"))
@@ -250,9 +258,8 @@ def Message processData(Message message) {
                     }
                     def sapItem = extractFirst(res, req.url)
                     if (sapItem == null) {
-                        logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_SAP_QUERY_NULL_ITEM", title: Constants.LOG_RECID, status: "ERROR", inputPayload: req.url, outputPayload: "Item lookup returned null \n\nResponse: ${res}"))
-                        message.setBody(JsonOutput.toJson([]))
-                        return message
+                        // Log null but don't early return
+                        logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_SAP_QUERY_NULL_ITEM", title: Constants.LOG_RECID, status: "OK", inputPayload: req.url, outputPayload: "Item lookup returned null \n\nResponse: ${res}"))
                     }
 
                     if (sapItem) {
@@ -267,9 +274,7 @@ def Message processData(Message message) {
                             if (r2 instanceof Map && r2.status == 1) logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_SAP_QUERY_UOM_OK", title: Constants.LOG_RECID, status: "OK", inputPayload: req2.url, outputPayload: r2.payload))
                             def uom = extractFirst(r2, req2.url)
                             if (uom == null) {
-                                logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_SAP_QUERY_NULL_UOM", title: Constants.LOG_RECID, status: "ERROR", inputPayload: req2.url, outputPayload: "message: UoM lookup returned null \n\nresponse: ${r2}"))
-                                message.setBody(JsonOutput.toJson([]))
-                                return message
+                                logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_SAP_QUERY_NULL_UOM", title: Constants.LOG_RECID, status: "OK", inputPayload: req2.url, outputPayload: "message: UoM lookup returned null \n\nresponse: ${r2}"))
                             }
                             uomAbs = uom?.AbsEntry ?: uomAbs
                         }
@@ -282,9 +287,7 @@ def Message processData(Message message) {
                             }
                             def grp = extractFirst(r3, req3.url)
                             if (grp == null) {
-                                logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_SAP_QUERY_NULL_UOMGROUP", title: Constants.LOG_RECID, status: "ERROR", inputPayload: req3.url, outputPayload: "message: UoM group lookup returned null \n\nresponse: ${r3}"))
-                                message.setBody(JsonOutput.toJson([]))
-                                return message
+                                logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_SAP_QUERY_NULL_UOMGROUP", title: Constants.LOG_RECID, status: "OK", inputPayload: req3.url, outputPayload: "message: UoM group lookup returned null \n\nresponse: ${r3}"))
                             }
                             def alt = grp?.GroupDefinitionColllection?.AlternateQuantity ?: grp?.AlternateQuantity
                             def baseQ = grp?.GroupDefinitionColllection?.BaseQuantity ?: grp?.BaseQuantity
@@ -302,7 +305,8 @@ def Message processData(Message message) {
                 def calcQty = (qty * fuomqty * invConv)
                 def line = [ ItemCode: itemCode, Quantity: calcQty, SerialNumbers: [], BatchNumbers: [] ]
 
-                def lotno = prod.flotno?.text()
+                // def lotno = prod.flotno?.text()
+                def lotno = ""  // Not a requirement right now
                 if (manageSerial) {
                     if (!lotno) {
                         logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_MISSING_LOTNO_SERIAL", title: Constants.LOG_RECID, status: "ERROR", inputPayload: itemCode, outputPayload: "Missing lotno for serial-managed item ${itemCode}"))
