@@ -258,6 +258,8 @@ class HTTPSOAPConnection {
      * returns a single well-formed XML payload containing all records and the four
      * control keys (`fnew_batchid`, `flast_batchid`, `flast_key`, `fdone`) taken from
      * the last page fetched.
+     *
+     * Warning: This only captures the last page's 4 keys and return code.
      */
     public def postAllPagination(SOAPRequestBody baseRequest) {
         try {
@@ -298,6 +300,7 @@ class HTTPSOAPConnection {
             String finalFlastBatchid = ""
             String finalFlastKey = ""
             String finalFdone = "0"
+            String finalReturnCode = "0"
 
             while (true) {
                 def resp = this.post(request)
@@ -328,6 +331,10 @@ class HTTPSOAPConnection {
                 finalFlastBatchid = pageParsed.data.flast_batchid?.text() ?: finalFlastBatchid
                 finalFlastKey = pageParsed.data.flast_key?.text() ?: finalFlastKey
                 finalFdone = pageParsed.data.fdone?.text() ?: finalFdone
+
+                // extract return_code if present anywhere under the page (may be sibling of <data>)
+                def rcNode = pageParsed.'**'.find { it.name() == 'return_code' }
+                finalReturnCode = rcNode?.text() ?: finalReturnCode
 
                 // collect records - robust multi-strategy extraction to avoid truncation
                 def collectPageRecordFragments = { String pageText, def parsedPage ->
@@ -402,7 +409,7 @@ class HTTPSOAPConnection {
                 finalResponse = pageResults.join('\n')
             } else {
                 def sb = new StringBuilder()
-                sb.append("""<?xml version='1.0' encoding='utf-8'?>\n<root>\n  <data>\n""")
+                sb.append("""<?xml version='1.0' encoding='utf-8'?>\n<root>\n  <return_code>${finalReturnCode}</return_code>\n  <data>\n""")
                 sb.append("    <fnew_batchid>${finalFnewBatchid}</fnew_batchid>\n")
                 sb.append("    <flast_batchid>${finalFlastBatchid}</flast_batchid>\n")
                 sb.append("    <flast_key>${finalFlastKey}</flast_key>\n")

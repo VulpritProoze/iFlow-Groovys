@@ -166,7 +166,7 @@ def Message processData(Message message) {
         }
         
         // If needed be, do not remove these two lines of code when customizing. Set the result of the custom mapping
-        // to a jsonResult instead
+        // to a jsonResult instead (jsonResult must, of course, be json)
         message.setBody(jsonResult)
         def logResult = logger.logBoth(new LogRequest(stepName: Constants.STEP_NAME, title: Constants.LOG_RECID, status: "OK", inputPayload: payload, outputPayload: JsonOutput.prettyPrint(jsonResult))) 
     } catch (Exception e) {
