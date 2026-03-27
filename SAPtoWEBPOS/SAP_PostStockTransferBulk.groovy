@@ -57,16 +57,6 @@ def Message processData(Message message) {
         logger.logInternal(new LogRequest(stepName: "${Constants.STEP_NAME}_LOGGER_FAILURE", title: Constants.LOG_RECID, status: "ERROR", inputPayload: 'Nothing yet.', outputPayload: "LoggerService failed: ${e.message}"))
     }
 
-    def sapCreds = extractSLCredentials(message)
-    if (sapCreds.status != 1) {
-        logger.logInternal(new LogRequest(stepName: "CREDENTIAL_FAILURE", title: Constants.LOG_RECID, status: "ERROR", inputPayload: payload, outputPayload: sapCreds.message))
-        message.setBody(JsonOutput.toJson([]))
-        return message
-    }
-
-    def sessionCookie = sapCreds.sessionCookie
-    def baseUrl = sapCreds.baseUrl
-
     def payload = ''
     def reader = message.getBody(java.io.Reader)
     if (reader != null) {
@@ -85,7 +75,17 @@ def Message processData(Message message) {
         return message
     }
 
-    def recordList = new JsonSlurper().parse(payload) 
+    def sapCreds = extractSLCredentials(message)
+    if (sapCreds.status != 1) {
+        logger.logInternal(new LogRequest(stepName: "CREDENTIAL_FAILURE", title: Constants.LOG_RECID, status: "ERROR", inputPayload: payload, outputPayload: sapCreds.message))
+        message.setBody(JsonOutput.toJson([]))
+        return message
+    }
+
+    def sessionCookie = sapCreds.sessionCookie
+    def baseUrl = sapCreds.baseUrl
+
+    def recordList = new JsonSlurper().parseText(payload) 
 
     // 1. Define Unique Boundaries
     String batchId = "batch_" + java.util.UUID.randomUUID().toString()
@@ -144,7 +144,6 @@ def Message processData(Message message) {
 
     return message
 }
-
 
 /**
  * Represents the configuration for an HTTP OData request.
