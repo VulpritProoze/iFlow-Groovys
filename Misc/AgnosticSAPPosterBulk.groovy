@@ -58,19 +58,15 @@ def Message processData(Message message) {
         logger.logInternal(new LogRequest(stepName: "${Constants.STEP_NAME}_LOGGER_FAILURE", title: Constants.LOG_RECID, status: "ERROR", inputPayload: payload, outputPayload: "LoggerService failed: ${loggerStatus.message}"))
     }
 
-    def sessionCookieResponse = extractSessionCookie(message)
-    if (sessionCookieResponse.status != 1) {
-        logger.logBoth(new LogRequest(stepName: Constants.STEP_NAME, title: Constants.LOG_RECID, status: "ERROR", inputPayload: "Credential Extraction", outputPayload: sessionCookieResponse.message))
+    def sapCreds = extractSLCredentials(message)
+    if (sapCreds.status != 1) {
+        logger.logInternal(new LogRequest(stepName: "CREDENTIAL_FAILURE", title: Constants.LOG_RECID, status: "ERROR", inputPayload: payload, outputPayload: sapCreds.message))
+        message.setBody(JsonOutput.toJson([]))
         return message
     }
-    def sessionCookie = sessionCookieResponse.payload
-    
-    def baseUrlResponse = extractBaseUrl(message)
-    if (baseUrlResponse.status != 1) {
-        logger.logBoth(new LogRequest(stepName: Constants.STEP_NAME, title: Constants.LOG_RECID, status: "ERROR", inputPayload: "Credential Extraction", outputPayload: baseUrlResponse.message))
-        return message
-    }
-    def baseUrl = baseUrlResponse.payload
+
+    def sessionCookie = sapCreds.sessionCookie
+    def baseUrl = sapCreds.baseUrl
 
     def payload = ''
     def reader = message.getBody(java.io.Reader)
@@ -444,34 +440,22 @@ class HTTPODataConnection {
  */
 
 /**
- * Standalone method to extract SessionId from a Message Property.
- * Returns standardized Result Map.
- *
- * Usage in another script:
- * def cookieMap = extractSessionCookie(message)
+ * For extracting Service Layer credentials
+ * Returns map with status/message and the values as named items (no `payload` key).
+ * Example success: [status:1, message:'Success', sessionCookie: '...', baseUrl: '...']
  */
-def extractSessionCookie(Message message) {
+def extractSLCredentials(Message message) {
     String sessionCookie = message.getProperty(Constants.SESSION_VAR_PROP_NAME)
-    
+    String baseUrl = message.getProperty(Constants.BASE_URL_PROP_NAME)
+
     if (!sessionCookie) {
         return [status: -1, message: "SessionCookie is missing."]
     }
-    return [status: 1, message: "Success", payload: sessionCookie]
-}
-
-/**
- * Extracts the BaseUrl from a Message Property.
- * 
- * @param message The SAP CI Message object.
- * @return Map Result structure with status, message, payload.
- */
-def extractBaseUrl(Message message) {
-    String baseUrl = message.getProperty(Constants.BASE_URL_PROP_NAME)
-
     if (!baseUrl) {
         return [status: -1, message: "BaseUrl is missing."]
     }
-    return [status: 1, message: "Success", payload: baseUrl]
+
+    return [status: 1, message: "Success", sessionCookie: sessionCookie, baseUrl: baseUrl]
 }
 
 
