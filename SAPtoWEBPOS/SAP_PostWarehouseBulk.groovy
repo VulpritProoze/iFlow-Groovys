@@ -40,11 +40,11 @@ class Constants {
 }
 
 def Message processData(Message message) {
-    def logger = LoggerService(messageLogFactory, message)
+    def logger = new LoggerService(messageLogFactory, message)
     try {
         logger.injectW3PCredentials()
-    } catch {
-        logger.logInternal(new LogRequest(stepName: "${Constants.STEP_NAME}_LOGGER_FAILURE", title: Constants.LOG_RECID, status: "ERROR", inputPayload: payload, outputPayload: "LoggerService failed: ${loggerStatus.message}"))
+    } catch (Exception e) {
+        logger.logInternal(new LogRequest(stepName: "${Constants.STEP_NAME}_LOGGER_FAILURE", title: Constants.LOG_RECID, status: "ERROR", inputPayload: 'Nothing yet.', outputPayload: "LoggerService failed: ${e.message}"))
     }
 
     def sapCreds = extractSLCredentials(message)
