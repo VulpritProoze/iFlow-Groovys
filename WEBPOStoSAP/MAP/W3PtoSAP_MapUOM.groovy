@@ -159,7 +159,7 @@ def Message processData(Message message) {
     
 
     } catch (Exception e) {
-        // Log Error using logBoth
+        message.setBody(JsonOutput.toJson([]))
         def stackTrace = e.stackTrace.take(15).join('\n')
         def logErrResult = logger.logBoth(new LogRequest(stepName: Constants.STEP_NAME, title: Constants.LOG_RECID, status: "ERROR", inputPayload: "Original Payload length: ${payload?.length() ?: 0}", outputPayload: "Exception: ${e.message}\nStacktrace: ${stackTrace}"))
 
