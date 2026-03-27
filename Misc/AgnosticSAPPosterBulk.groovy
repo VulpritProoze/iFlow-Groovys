@@ -81,7 +81,7 @@ def Message processData(Message message) {
     }
 
     def _p = payload?.toString()?.trim()
-    if (!_p || _p == '[]' || _p == 'null' || _p = '') {
+    if (!_p || _p == '[]' || _p == 'null' || _p == '') {
         logger.logBoth(new LogRequest(stepName: Constants.STEP_NAME, title: Constants.LOG_RECID, status: "OK", inputPayload: payload, outputPayload: "Mapping payload is empty. Skipping POST Requests"))
         return message
     }
