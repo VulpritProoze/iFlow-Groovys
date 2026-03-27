@@ -29,7 +29,7 @@ class Constants {
     static final String SESSION_VAR_PROP_NAME = "[B1SESSION]"
     static final String BASE_URL_PROP_NAME = "[SL_BaseURL]"
     /** The relative OData endpoint for the entity (e.g., /Warehouses) */
-    static final String ENTITY_ENDPOINT = "/StockTransfer"
+    static final String ENTITY_ENDPOINT = "/StockTransfers"
 
     // For logging
     static final String W3P_CRED = "[W3P_CRED]"
