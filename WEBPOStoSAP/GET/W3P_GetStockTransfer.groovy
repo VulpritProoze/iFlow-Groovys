@@ -504,11 +504,15 @@ class HTTPSOAPConnection {
 
 
 
+/**
+ * LoggerService.groovy
+ * 
+ */
 /*
 ** This service handles dual-layered logging for SAP Cloud Integration (iFlows).
 ** logInternal: Adds an attachment to the SAP Message Processing Log (MPL) for debugging in the SAP Monitor.
-** logExternal: Prints a JSON-structured log to STDOUT for external aggregation and analysis (e.g., Kibana).
-** logBoth: Executes both internal and external logging simultaneously.
+** logProcess: Sends a SOAP-structured log to an external service (W3P) for process tracking.
+** logBoth: Executes both internal and process logging simultaneously.
 */
 
 /**
@@ -541,6 +545,9 @@ class LogRequest {
 class LoggerService {
     def messageLog
     def correlationId
+    private String w3pId = null
+    private String w3pKey = null
+    private String w3pBaseUrl = null
 
     // Valid Log Statuses
     public static final List<String> VALID_STATUSES = ["OK", "ERROR"]
@@ -593,6 +600,10 @@ class LoggerService {
      * @return Map with status (1: success, 0: validation error, -1: system/server error), message, and payload.
      */
     def logProcess(LogRequest request) {
+        if (w3pId == null || w3pBaseUrl == null || w3pKey == null) {
+            return [status: 0, message: "Missing W3P Credentials. LogProcess cannot be used"]
+        }
+
         // Validate Status
         String status = request.status?.toUpperCase()
         if (!(status in VALID_STATUSES)) {
@@ -606,22 +617,15 @@ class LoggerService {
         }
 
         try {
-            // Credentials extraction handled automatically via Secure Store
-            def credsMap = extractW3PCredentials()
-            if (credsMap.status != 1) {
-                return credsMap
-            }
-
             String dataContent = """
                     <fstatus_flag>${status}</fstatus_flag>
                     <frecordid>${recordId}</frecordid>
                     <finput_param>Step: ${request.stepName}\nTitle: ${request.title}\n\n${escapeXml(request.inputPayload)}</finput_param>
                     <foutput_param>${escapeXml(request.outputPayload)}</foutput_param>
             """.trim()
+            String soapEnvelope = buildSoapEnvelope("POST_LOG", this.w3pId, this.w3pKey, dataContent)
 
-            String soapEnvelope = buildSoapEnvelope("POST_LOG", credsMap.id, credsMap.key, dataContent)
-
-            return postSoap(credsMap.baseUrl, soapEnvelope)
+            return postSoap(this.w3pBaseUrl, soapEnvelope)
         } catch (Exception e) {
             return [status: -1, message: "LoggerService: logProcess error: ${e.message}"]
         }
@@ -711,43 +715,38 @@ class LoggerService {
     }
 
     /**
-     * Internal helper to extract W3P credentials from the SAP Secure Store.
+     * Internal helper to inject W3P credentials.
      * Defined inside the class to ensure it's accessible to class methods.
      * @return Map with credentials or error structure.
      */
-    private static Map extractW3PCredentials() {
-        try {
-            def service = ITApiFactory.getService(SecureStoreService.class, null)
-            if (service == null) {
-                return [status: -1, message: "SecureStoreService is not available."]
-            }
-
-            // Extraction lambda/helper for internal use
-            def getCreds = { String key ->
-                def creds = service.getUserCredential(key)
-                if (creds == null) {
-                    return null
-                }
-                return creds
-            }
-
-            def w3pCreds = getCreds(Constants.W3P_CRED)
-            if (w3pCreds == null) return [status: -1, message: "Credential '${Constants.W3P_CRED}' not found in Security Material."]
-            
-            def w3pUrlCreds = getCreds(Constants.W3P_URL)
-            if (w3pUrlCreds == null) return [status: -1, message: "Credential '${Constants.W3P_URL}' not found in Security Material."]
-
-            return [
-                status: 1,
-                id: w3pCreds.getUsername(),
-                key: new String(w3pCreds.getPassword()),
-                baseUrl: new String(w3pUrlCreds.getPassword())
-            ]
-        } catch (Exception e) {
-            return [status: -1, message: "Error extracting credentials: ${e.message}"]
+    private def injectW3PCredentials() {
+        def service = ITApiFactory.getService(SecureStoreService.class, null)
+        if (service == null) {
+            throw IllegalStateException("SecureStoreService is not available.")
         }
-    }
 
+        // Extraction lambda/helper for internal use
+        def getCreds = { String key ->
+            def creds = service.getUserCredential(key)
+            if (creds == null) {
+                return null
+            }
+            return creds
+        }
+
+        def w3pCreds = getCreds(Constants.W3P_CRED)
+        if (w3pCreds == null) throw IllegalStateException("Credential '${Constants.W3P_CRED}' not found in Security Material.")
+        
+        def w3pUrlCreds = getCreds(Constants.W3P_URL)
+        if (w3pUrlCreds == null) throw IllegalStateException("Credential '${Constants.W3P_URL}' not found in Security Material.")
+
+        // Set private instance variables; do NOT return credentials in the response
+        this.w3pId = w3pCreds.getUsername()
+        this.w3pKey = new String(w3pCreds.getPassword())
+        this.w3pBaseUrl = new String(w3pUrlCreds.getPassword())
+
+        return this
+    }
 }
 
 

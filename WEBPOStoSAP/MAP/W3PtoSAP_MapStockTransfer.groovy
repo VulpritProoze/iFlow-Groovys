@@ -1000,7 +1000,6 @@ class LoggerService {
 
         return this
     }
-
 }
 
 

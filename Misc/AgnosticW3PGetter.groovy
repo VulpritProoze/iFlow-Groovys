@@ -511,11 +511,15 @@ class HTTPSOAPConnection {
 
 
 
+/**
+ * LoggerService.groovy
+ * 
+ */
 /*
 ** This service handles dual-layered logging for SAP Cloud Integration (iFlows).
 ** logInternal: Adds an attachment to the SAP Message Processing Log (MPL) for debugging in the SAP Monitor.
-** logExternal: Prints a JSON-structured log to STDOUT for external aggregation and analysis (e.g., Kibana).
-** logBoth: Executes both internal and external logging simultaneously.
+** logProcess: Sends a SOAP-structured log to an external service (W3P) for process tracking.
+** logBoth: Executes both internal and process logging simultaneously.
 */
 
 /**
@@ -750,7 +754,6 @@ class LoggerService {
 
         return this
     }
-
 }
 
 

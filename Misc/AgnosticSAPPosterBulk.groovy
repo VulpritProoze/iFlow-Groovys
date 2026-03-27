@@ -480,8 +480,6 @@ def extractBaseUrl(Message message) {
 /**
  * LoggerService.groovy
  * 
- * Dependencies:
- * - ExtractW3PCredentials.groovy (as private method)
  */
 /*
 ** This service handles dual-layered logging for SAP Cloud Integration (iFlows).
@@ -489,7 +487,6 @@ def extractBaseUrl(Message message) {
 ** logProcess: Sends a SOAP-structured log to an external service (W3P) for process tracking.
 ** logBoth: Executes both internal and process logging simultaneously.
 */
-
 
 /**
  * Data Transfer Object (DTO) for structured logging.
@@ -723,7 +720,6 @@ class LoggerService {
 
         return this
     }
-
 }
 
 
