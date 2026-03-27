@@ -39,6 +39,16 @@ class Constants {
     static final String LOG_RECID = "W3P"
 }
 
+/**
+ * Process the incoming response and post all contained records to SAP in one bulk request.
+ *
+ * Parses the message body (SOAP or JSON), extracts all <record> elements, converts them
+ * to JSON, and submits them as a single multipart OData $batch (changeset) POST.
+ * Expects `SESSION_VAR_PROP_NAME` and `BASE_URL_PROP_NAME` to be available as message
+ * properties for session and service endpoint. Logs summary and details of the batch result.
+ *
+ * Note: This code is not customizable.
+ */
 def Message processData(Message message) {
     def logger = new LoggerService(messageLogFactory, message)
     try {
@@ -57,8 +67,25 @@ def Message processData(Message message) {
     def sessionCookie = sapCreds.sessionCookie
     def baseUrl = sapCreds.baseUrl
 
+    def payload = ''
     def reader = message.getBody(java.io.Reader)
-    def recordList = new JsonSlurper().parse(reader) 
+    if (reader != null) {
+        try {
+            payload = reader.getText() ?: ''
+        } finally {
+            try { reader.close() } catch (e) { /* ignore close errors */ }
+        }
+    } else {
+        payload = (message.getBody(java.lang.String) ?: '')
+    }
+
+    def _p = payload?.toString()?.trim()
+    if (!_p || _p == '[]' || _p == 'null' || _p = '') {
+        logger.logBoth(new LogRequest(stepName: Constants.STEP_NAME, title: Constants.LOG_RECID, status: "OK", inputPayload: payload, outputPayload: "Mapping payload is empty. Skipping POST Requests"))
+        return message
+    }
+
+    def recordList = new JsonSlurper().parse(payload) 
 
     // 1. Define Unique Boundaries
     String batchId = "batch_" + java.util.UUID.randomUUID().toString()
@@ -678,6 +705,7 @@ class LoggerService {
         return this
     }
 }
+
 
 
 
