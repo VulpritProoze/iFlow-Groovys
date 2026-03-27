@@ -25,7 +25,7 @@ import com.sap.it.api.ITApiFactory
 import com.sap.it.api.securestore.SecureStoreService
 
 class Constants {
-    static final String STEP_NAME = "[StepName]"
+    static final String STEP_NAME = "SAP_PostStockTransferBulk"
     static final String SESSION_VAR_PROP_NAME = "[B1SESSION]"
     static final String BASE_URL_PROP_NAME = "[SL_BaseURL]"
     /** The relative OData endpoint for the entity (e.g., /Warehouses) */
