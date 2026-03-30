@@ -50,7 +50,7 @@ class Constants {
  * Expects `SESSION_VAR_PROP_NAME` and `BASE_URL_PROP_NAME` to be available as message
  * properties for session and service endpoint. Logs summary and details of the batch result.
  *
- * Note: This code is not customizable.
+ * Customizability: See line 101 - 108
  */
 def Message processData(Message message) {
     def logger = new LoggerService(messageLogFactory, message)
@@ -88,7 +88,10 @@ def Message processData(Message message) {
     def sessionCookie = sapCreds.sessionCookie
     def baseUrl = sapCreds.baseUrl
 
-    def recordList = new JsonSlurper().parseText(payload) 
+    def recordList = new JsonSlurper().parseText(payload)
+
+    // create connection early so we can query SAP before building parts
+    def conn = new HTTPODataConnection(baseUrl).setSessionCookie(sessionCookie)
 
     // 1. Define Unique Boundaries
     String batchId = "batch_" + java.util.UUID.randomUUID().toString()
@@ -100,13 +103,33 @@ def Message processData(Message message) {
     batchBody.append("--${batchId}\r\n")
     batchBody.append("Content-Type: multipart/mixed; boundary=${changesetId}\r\n\r\n")
 
+    /*
+     * This part of the code is customizable. We can do api calls here to SAP, to for example,
+     * check if the endpoint already has those items that we want to POST (POST is not idempotent).
+     * Sometimes, we want to PATCH it instead. 
+    */
     recordList.each { record ->
-        batchBody.append("--${changesetId}\r\n")
-        batchBody.append("Content-Type: application/http\r\n")
-        batchBody.append("Content-Transfer-Encoding: binary\r\n\r\n")
-        batchBody.append("POST /b1s/v1${Constants.ENTITY_ENDPOINT}\r\n")
-        batchBody.append("Content-Type: application/json\r\n\r\n")
-        batchBody.append(JsonOutput.toJson(record)).append("\r\n\r\n")
+        def code = (record.Code ?: record.code ?: record.uom ?: record.UnitOfMeasure ?: '')?.toString()
+        def method = 'POST'
+        def id = null
+
+        if (code) {
+            def esc = code.replace("'", "''")
+            def filterUrl = "/UnitOfMeasurementGroups?\$filter=Code%20eq%20'${esc}'"
+            try {
+                def getRes = conn.get(new ODataRequestBody(url: filterUrl))
+                if (getRes.status == 1 && getRes.payload?.value && getRes.payload.value.size() > 0) {
+                    method = 'PATCH'
+                    id = (getRes.payload.value[0].Code ?: code)?.toString()
+                } else {
+                    method = 'POST'
+                }
+            } catch (e) {
+                method = 'POST'
+            }
+        }
+
+        batchBody.append(sapRequestBatchBodyBuilder(record, changesetId, method, id))
     }
 
     batchBody.append("--${changesetId}--\r\n")
@@ -121,8 +144,6 @@ def Message processData(Message message) {
             'Content-Type': "multipart/mixed; boundary=${batchId}"
         ]
     )
-
-    def conn = new HTTPODataConnection(baseUrl).setSessionCookie(sessionCookie)
 
     try {
         // Your connection class 'post' method writes request.payload to the output stream
@@ -146,6 +167,41 @@ def Message processData(Message message) {
     }
 
     return message
+}
+
+/**
+ * Builds a single multipart changeset part for a given record.
+ * summary: Build one changeset/part for OData $batch
+ * params: record - the record object to include in the part, changesetId - the multipart boundary for the changeset,
+ *      method - the http method (PUT, PATCH, POST, DELETE), id - only for PATCH and DELETE requests
+ * description: Returns the string representing the multipart section for one record (including the leading changeset boundary).
+ * example: sapRequestBatchBodyBuilder(record, changesetId)
+ */
+def sapRequestBatchBodyBuilder(Object record, String changesetId, String method, String id = null) {
+    def m = (method ?: '').toString().toUpperCase()
+    def allowed = ['PUT', 'PATCH', 'POST', 'DELETE']
+    if (!allowed.contains(m)) return // Only allow these methods
+
+    // Validation rules for id:
+    // - If id is provided, the method must be PATCH or DELETE (id allowed only for those)
+    // - If method is PATCH or DELETE, an id must be provided
+    if (id != null && !(m in ['PATCH', 'DELETE'])) return
+    if ((m in ['PATCH', 'DELETE']) && (id == null || id.toString().trim() == '')) return
+
+    StringBuilder part = new StringBuilder()
+    part.append("--${changesetId}\r\n")
+    part.append("Content-Type: application/http\r\n")
+    part.append("Content-Transfer-Encoding: binary\r\n\r\n")
+    // Build request line. Append (id) for PATCH and DELETE methods.
+    def endpointSuffix = ''
+    if (m in ['PATCH', 'DELETE']) {
+        def iid = id?.toString()?.trim()
+        endpointSuffix = iid ? "(${iid})" : ''
+    }
+    part.append("${m} /b1s/v1${Constants.ENTITY_ENDPOINT}${endpointSuffix}\r\n")
+    part.append("Content-Type: application/json\r\n\r\n")
+    part.append(JsonOutput.toJson(record)).append("\r\n\r\n")
+    return part.toString()
 }
 
 
