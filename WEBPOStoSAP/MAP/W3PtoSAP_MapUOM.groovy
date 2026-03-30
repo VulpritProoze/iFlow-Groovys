@@ -78,8 +78,8 @@ class Constants {
     static final String LOG_RECID = "W3P"
 
     // Uncomment these constants if logging in to SAP
-    // static final String SESSION_VAR_PROP_NAME = "[B1SESSION]"
-    // static final String BASE_URL_PROP_NAME = "[SL_BaseURL]"
+    static final String SESSION_VAR_PROP_NAME = "[B1SESSION]"
+    static final String BASE_URL_PROP_NAME = "[SL_BaseURL]"
 
 }
 
@@ -139,12 +139,79 @@ def Message processData(Message message) {
 
     // Clear out code in try block if customize
     try {
-   
-        
-        // If needed be, do not remove these two lines of code when customizing. Set the result of the custom mapping
-        // to a jsonResult instead (jsonResult must, of course, be json)
+        def records = extractRecordsFromPayload(payload)
+        if (!records || records.size() == 0) {
+            def jsonResult = JsonOutput.toJson([])
+            message.setBody(jsonResult)
+            logger.logBoth(new LogRequest(stepName: Constants.STEP_NAME, title: Constants.LOG_RECID, status: "OK", inputPayload: payload, outputPayload: "No records found - empty mapping"))
+            return message
+        }
+
+        def mapped = []
+        for (int r = 0; r < records.size(); r++) {
+            def rec = records[r]
+            def fuomid = rec.fuomid?.text() ?: ''
+            def fname = rec.fname?.text() ?: ''
+            def fbase = rec.fbase_uom?.text() ?: ''
+
+            // Resolve BaseUoM in SAP (try GET, otherwise create)
+            def baseResolved = fbase
+            if (fbase) {
+                def baseRes = postUoMSAP(message, fbase, logger)
+                if (baseRes?.status == 1 && baseRes.payload != null) {
+                    def p = baseRes.payload
+                    try {
+                        if (p instanceof Map && p.containsKey('value') && p.value.size() > 0) {
+                            baseResolved = p.value[0].AbsEntry ?: fbase
+                        } else if (p instanceof Map && p.containsKey('UoMEntry')) {
+                            baseResolved = p.UoMEntry ?: fbase
+                        } else {
+                            baseResolved = fbase
+                        }
+                    } catch (e) { baseResolved = fbase }
+                }
+            }
+
+            // Build UoMGroupDefinitionCollection from <def> nodes
+            def defsList = []
+            def defNodes = []
+            try {
+                int defCount = rec.def?.size() ?: 0
+                for (int k = 0; k < defCount; k++) {
+                    defNodes << rec.def[k]
+                }
+            } catch (e) { defNodes = [] }
+
+            for (int d = 0; d < defNodes.size(); d++) {
+                def dn = defNodes[d]
+                def altUomCode = dn.fuom?.text() ?: ''
+                def baseQty = dn.fqty?.text() ?: ''
+
+                // Attempt to resolve alternate UoM in SAP (best-effort)
+                def altResolved = altUomCode
+                if (altUomCode) {
+                    def altRes = postUoMSAP(message, altUomCode, logger)
+                    if (altRes?.status == 1 && altRes.payload != null) {
+                        def pp = altRes.payload
+                        try {
+                            if (pp instanceof Map && pp.containsKey('value') && pp.value.size() > 0) {
+                                altResolved = pp.value[0].AbsEntry ?: altUomCode
+                            } else if (pp instanceof Map && pp.containsKey('UoMEntry')) {
+                                altResolved = pp.UoMEntry ?: altUomCode
+                            }
+                        } catch (e) { altResolved = altUomCode }
+                    }
+                }
+
+                defsList << [AlternateUoM: altResolved, BaseQuantity: baseQty, AlternateQuantity: "1"]
+            }
+
+            mapped << [Code: fuomid, Name: fname, BaseUoM: baseResolved, UoMGroupDefinitionCollection: defsList]
+        }
+
+        def jsonResult = JsonOutput.toJson(mapped)
         message.setBody(jsonResult)
-        def logResult = logger.logBoth(new LogRequest(stepName: Constants.STEP_NAME, title: Constants.LOG_RECID, status: "OK", inputPayload: payload, outputPayload: JsonOutput.prettyPrint(jsonResult))) 
+        logger.logBoth(new LogRequest(stepName: Constants.STEP_NAME, title: Constants.LOG_RECID, status: "OK", inputPayload: payload, outputPayload: JsonOutput.prettyPrint(jsonResult)))
     } catch (Exception e) {
         message.setBody(JsonOutput.toJson([]))
         def stackTrace = e.stackTrace.take(15).join('\n')
@@ -159,6 +226,56 @@ def Message processData(Message message) {
 }
 
 // Add other methods here for customization
+
+/**
+ * summary: Ensure a UoM exists in SAP or retrieve it.
+ * params: message - iFlow Message, uomCode - code to query/create, logger - LoggerService instance
+ * description: Tries to GET `/UnitOfMeasurements` filtered by `Code`. If not found, POSTs a new UoM.
+ * example: postUoMSAP(message, 'PC', logger)
+ * returns: result map [status: 1|0|-1, message: String, payload: responsePayload]
+ */
+def postUoMSAP(Message message, String uomCode, LoggerService logger) {
+    if (!uomCode) return [status: 0, message: 'Empty uomCode', payload: null]
+    try {
+        def creds = extractSLCredentials(message)
+        if (creds?.status != 1) {
+            return [status: 0, message: 'Missing Service Layer credentials', payload: null]
+        }
+
+        def conn = new HTTPODataConnection(creds.baseUrl).setSessionCookie(creds.sessionCookie)
+
+        // Attempt GET
+        try {
+            def getReq = new ODataRequestBody(url: "/UnitOfMeasurements?\$filter=Code%20eq%20'${uomCode}'")
+            def getRes = conn.get(getReq)
+            logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_GET_UOM", title: Constants.LOG_RECID, status: (getRes?.status==1?"OK":"ERROR"), inputPayload: "Query Code: ${uomCode}", outputPayload: getRes))
+            if (getRes?.status == 1 && getRes.payload != null) {
+                return [status: 1, message: 'Found', payload: getRes.payload]
+            }
+        } catch (e) {
+            // Continue to create if GET fails
+        }
+
+        // Create UoM via POST
+        try {
+            def bodyMap = [Code: uomCode, Name: uomCode]
+            def postReq = new ODataRequestBody(url: "/UnitOfMeasurements", payload: JsonOutput.toJson(bodyMap), requestProperty: ['Content-Type': 'application/json'])
+            def postRes = conn.post(postReq)
+            logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_POST_UOM", title: Constants.LOG_RECID, status: (postRes?.status==1?"OK":"ERROR"), inputPayload: postReq.payload, outputPayload: postRes))
+            if (postRes?.status == 1) {
+                return [status: 1, message: 'Created', payload: postRes.payload]
+            } else {
+                return [status: 0, message: 'Failed to create UoM', payload: postRes]
+            }
+        } catch (e) {
+            logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_POST_UOM_ERR", title: Constants.LOG_RECID, status: "ERROR", inputPayload: uomCode, outputPayload: e.message))
+            return [status: -1, message: e.message, payload: null]
+        }
+    } catch (e) {
+        logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_POST_UOM_FATAL", title: Constants.LOG_RECID, status: "ERROR", inputPayload: uomCode, outputPayload: e.message))
+        return [status: -1, message: e.message, payload: null]
+    }
+}
 
 
 
