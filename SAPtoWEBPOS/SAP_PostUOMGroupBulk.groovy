@@ -120,7 +120,7 @@ def Message processData(Message message) {
                 def getRes = conn.get(new ODataRequestBody(url: filterUrl))
                 if (getRes.status == 1 && getRes.payload?.value && getRes.payload.value.size() > 0) {
                     method = 'PATCH'
-                    id = (getRes.payload.value[0].Code ?: code)?.toString()
+                    id = (getRes.payload.value[0].Code ?: code)?.toString() // mind the type of the id
                 } else {
                     method = 'POST'
                 }
@@ -177,7 +177,7 @@ def Message processData(Message message) {
  * description: Returns the string representing the multipart section for one record (including the leading changeset boundary).
  * example: sapRequestBatchBodyBuilder(record, changesetId)
  */
-def sapRequestBatchBodyBuilder(Object record, String changesetId, String method, String id = null) {
+def sapRequestBatchBodyBuilder(Object record, String changesetId, String method, Object id = null) {
     def m = (method ?: '').toString().toUpperCase()
     def allowed = ['PUT', 'PATCH', 'POST', 'DELETE']
     if (!allowed.contains(m)) return // Only allow these methods
@@ -192,11 +192,21 @@ def sapRequestBatchBodyBuilder(Object record, String changesetId, String method,
     part.append("--${changesetId}\r\n")
     part.append("Content-Type: application/http\r\n")
     part.append("Content-Transfer-Encoding: binary\r\n\r\n")
+
     // Build request line. Append (id) for PATCH and DELETE methods.
+    // Id is checked if it is a number or string
     def endpointSuffix = ''
     if (m in ['PATCH', 'DELETE']) {
-        def iid = id?.toString()?.trim()
-        endpointSuffix = iid ? "(${iid})" : ''
+        def iidObj = id
+        if (iidObj != null) {
+            if (iidObj instanceof Number) {
+                endpointSuffix = "(${iidObj.toString()})"
+            } else {
+                def idStr = iidObj.toString().trim()
+                def esc = idStr.replace("'", "''")
+                endpointSuffix = "('${esc}')"
+            }
+        }
     }
     part.append("${m} /b1s/v1${Constants.ENTITY_ENDPOINT}${endpointSuffix}\r\n")
     part.append("Content-Type: application/json\r\n\r\n")
