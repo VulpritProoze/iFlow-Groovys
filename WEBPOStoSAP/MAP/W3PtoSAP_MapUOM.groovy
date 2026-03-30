@@ -147,6 +147,17 @@ def Message processData(Message message) {
             return message
         }
 
+        // Extract Service Layer credentials once and create OData connection
+        def creds = extractSLCredentials(message)
+        if (creds?.status != 1) {
+            def jsonResult = JsonOutput.toJson([])
+            message.setBody(jsonResult)
+            logger.logBoth(new LogRequest(stepName: Constants.STEP_NAME, title: Constants.LOG_RECID, status: "ERROR", inputPayload: payload, outputPayload: "Missing Service Layer credentials: ${creds?.message ?: 'unknown'}"))
+            return message
+        }
+
+        def odataConn = new HTTPODataConnection(creds.baseUrl).setSessionCookie(creds.sessionCookie)
+
         def mapped = []
         for (int r = 0; r < records.size(); r++) {
             def rec = records[r]
@@ -157,7 +168,13 @@ def Message processData(Message message) {
             // Resolve BaseUoM in SAP (try GET, otherwise create)
             def baseResolved = fbase
             if (fbase) {
-                def baseRes = postUoMSAP(message, fbase, logger)
+                def baseRes = postUoMSAP(message, fbase, odataConn)
+                // Log result of UoM resolution
+                if (baseRes?.status == 1) {
+                    logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_UOM_RESOLVE", title: Constants.LOG_RECID, status: "OK", inputPayload: "Resolve BaseUoM: ${fbase}", outputPayload: baseRes.payload))
+                } else {
+                    logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_UOM_RESOLVE", title: Constants.LOG_RECID, status: "ERROR", inputPayload: "Resolve BaseUoM: ${fbase}", outputPayload: baseRes?.message ?: baseRes))
+                }
                 if (baseRes?.status == 1 && baseRes.payload != null) {
                     def p = baseRes.payload
                     try {
@@ -190,7 +207,13 @@ def Message processData(Message message) {
                 // Attempt to resolve alternate UoM in SAP (best-effort)
                 def altResolved = altUomCode
                 if (altUomCode) {
-                    def altRes = postUoMSAP(message, altUomCode, logger)
+                    def altRes = postUoMSAP(message, altUomCode, odataConn)
+                    // Log alternate UoM resolution
+                    if (altRes?.status == 1) {
+                        logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_UOM_RESOLVE", title: Constants.LOG_RECID, status: "OK", inputPayload: "Resolve AltUoM: ${altUomCode}", outputPayload: altRes.payload))
+                    } else {
+                        logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_UOM_RESOLVE", title: Constants.LOG_RECID, status: "ERROR", inputPayload: "Resolve AltUoM: ${altUomCode}", outputPayload: altRes?.message ?: altRes))
+                    }
                     if (altRes?.status == 1 && altRes.payload != null) {
                         def pp = altRes.payload
                         try {
@@ -227,28 +250,18 @@ def Message processData(Message message) {
 
 // Add other methods here for customization
 
-/**
- * summary: Ensure a UoM exists in SAP or retrieve it.
- * params: message - iFlow Message, uomCode - code to query/create, logger - LoggerService instance
- * description: Tries to GET `/UnitOfMeasurements` filtered by `Code`. If not found, POSTs a new UoM.
- * example: postUoMSAP(message, 'PC', logger)
- * returns: result map [status: 1|0|-1, message: String, payload: responsePayload]
- */
-def postUoMSAP(Message message, String uomCode, LoggerService logger) {
+def postUoMSAP(Message message, String uomCode, def conn = null) {
     if (!uomCode) return [status: 0, message: 'Empty uomCode', payload: null]
     try {
-        def creds = extractSLCredentials(message)
-        if (creds?.status != 1) {
-            return [status: 0, message: 'Missing Service Layer credentials', payload: null]
+        // Require a provided HTTPODataConnection; do not create one here
+        if (conn == null) {
+            return [status: 0, message: 'No HTTPODataConnection provided', payload: null]
         }
-
-        def conn = new HTTPODataConnection(creds.baseUrl).setSessionCookie(creds.sessionCookie)
 
         // Attempt GET
         try {
             def getReq = new ODataRequestBody(url: "/UnitOfMeasurements?\$filter=Code%20eq%20'${uomCode}'")
             def getRes = conn.get(getReq)
-            logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_GET_UOM", title: Constants.LOG_RECID, status: (getRes?.status==1?"OK":"ERROR"), inputPayload: "Query Code: ${uomCode}", outputPayload: getRes))
             if (getRes?.status == 1 && getRes.payload != null) {
                 return [status: 1, message: 'Found', payload: getRes.payload]
             }
@@ -261,18 +274,15 @@ def postUoMSAP(Message message, String uomCode, LoggerService logger) {
             def bodyMap = [Code: uomCode, Name: uomCode]
             def postReq = new ODataRequestBody(url: "/UnitOfMeasurements", payload: JsonOutput.toJson(bodyMap), requestProperty: ['Content-Type': 'application/json'])
             def postRes = conn.post(postReq)
-            logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_POST_UOM", title: Constants.LOG_RECID, status: (postRes?.status==1?"OK":"ERROR"), inputPayload: postReq.payload, outputPayload: postRes))
             if (postRes?.status == 1) {
                 return [status: 1, message: 'Created', payload: postRes.payload]
             } else {
                 return [status: 0, message: 'Failed to create UoM', payload: postRes]
             }
         } catch (e) {
-            logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_POST_UOM_ERR", title: Constants.LOG_RECID, status: "ERROR", inputPayload: uomCode, outputPayload: e.message))
             return [status: -1, message: e.message, payload: null]
         }
     } catch (e) {
-        logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_POST_UOM_FATAL", title: Constants.LOG_RECID, status: "ERROR", inputPayload: uomCode, outputPayload: e.message))
         return [status: -1, message: e.message, payload: null]
     }
 }
