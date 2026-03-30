@@ -59,9 +59,6 @@ class Constants {
  * - Builds a consolidated XML containing all <record> elements collected from
  *   each page; only the final page's control keys are appended:
  *   `fnew_batchid`, `flast_batchid`, `flast_key`, `fdone`.
- * - The last 4 keys are also set to property to be stored in global variable store
- *   to be pulled again on next cycle to ensure the old cycle does not requery same
- *   response (NOT YET IMPLEMENTED).
  *
  * @param message the incoming iFlow Message
  * @return the iFlow Message with the aggregated SOAP-wrapped XML set as body
