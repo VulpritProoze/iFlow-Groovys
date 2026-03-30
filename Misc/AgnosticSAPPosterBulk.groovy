@@ -185,7 +185,12 @@ def sapRequestBatchBodyBuilder(Object record, String changesetId, String method,
             }
         }
     }
-    part.append("${m} /b1s/v1${Constants.ENTITY_ENDPOINT}${endpointSuffix}\r\n")
+    // Request-line must include HTTP version for SAP Service Layer $batch parsing
+    part.append("${m} /b1s/v1${Constants.ENTITY_ENDPOINT}${endpointSuffix} HTTP/1.1\r\n")
+    // Include If-Match for PATCH to ensure correct optimistic concurrency handling in SL
+    if (m == 'PATCH') {
+        part.append("If-Match: *\r\n")
+    }
     part.append("Content-Type: application/json\r\n\r\n")
     part.append(JsonOutput.toJson(record)).append("\r\n\r\n")
     return part.toString()
