@@ -59,9 +59,6 @@ class Constants {
      *       "Width": "w"
      *   ],
      *   "Tags": ["tag1", "tag2"],           // static list
-     *   "DynamicList": { responses, rec, idx ->   // closure-based dynamic value
-     *       return [ A: rec.fname ?: '', B: responses.GET_X?.first?.value ?: '' ]
-     *   },
      *   "Price": "unitPrice * quantity"       // arithmetic expression
      * ]
      *
@@ -384,7 +381,7 @@ def extractMappedRecords(String payload, Map mapping, Map customRules = [:]) {
         // - a String expression -> resolves via resolveExpression
         // - a Map -> treated as a nested mapping (recurses)
         // - a List -> each element resolved and returned as a list
-        // - a Closure -> dynamic constructor invoked as closure(responsesMap, currentRecord, idx)
+        // - a Closure -> dynamic constructor invoked as closure(responsesMap, currentRecord, idx) -- WARNING! This is no longer taken into consideration. Consider as deprecated
         // path: dot-delimited key path used to apply customRules (if provided)
     def resolveMappingValue = { def spec, Map responsesMap, Map currentRecord = null, Integer idx = null, String path = null ->
         if (spec == null) return ''
