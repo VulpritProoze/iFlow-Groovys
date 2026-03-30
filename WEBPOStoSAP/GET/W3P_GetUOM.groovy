@@ -32,8 +32,8 @@ import java.time.ZoneOffset
 class Constants {
     static final String STEP_NAME = "W3P_GetUOM"
     static final String ACTION = "GET_UOM"
-    static final String W3P_CRED = "[W3P_CRED]"
-    static final String W3P_URL = "[W3P_URL]"
+    static final String W3P_CRED = "ITGWEPOSSAPINTEGRATION_W3P_CREDS"
+    static final String W3P_URL = "ITGWEPOSSAPINTEGRATION_WEBPOS_URL"
 
     // Default filter values for WebPOS SOAP requests.
     static final Map FILTERS = [:]
@@ -43,10 +43,10 @@ class Constants {
 
     // W3P keys store constants
     // We avoid conflicts with other global variables by ff. this standard
-    static final String NEW_BATCHID_PROP_NAME = "[ProjectName]_GetUoM_fnew_batchid"
-    static final String LAST_BATCHID_PROP_NAME = "[ProjectName]_GetUoM_flast_batchid"
-    static final String LAST_KEY_PROP_NAME = "[ProjectName]_GetUoM_flast_key"
-    static final String FDONE_PROP_NAME = "[ProjectName]_GetUoM_fdone"
+    static final String NEW_BATCHID_PROP_NAME = "ITGWEPOSSAPINTEGRATION3_GetUoM_fnew_batchid"
+    static final String LAST_BATCHID_PROP_NAME = "ITGWEPOSSAPINTEGRATION3_GetUoM_flast_batchid"
+    static final String LAST_KEY_PROP_NAME = "ITGWEPOSSAPINTEGRATION3_GetUoM_flast_key"
+    static final String FDONE_PROP_NAME = "ITGWEPOSSAPINTEGRATION3_GetUoM_fdone"
 }
 
 /**
@@ -58,9 +58,6 @@ class Constants {
  * - Builds a consolidated XML containing all <record> elements collected from
  *   each page; only the final page's control keys are appended:
  *   `fnew_batchid`, `flast_batchid`, `flast_key`, `fdone`.
- * - The last 4 keys are also set to property to be stored in global variable store
- *   to be pulled again on next cycle to ensure the old cycle does not requery same
- *   response (NOT YET IMPLEMENTED).
  *
  * @param message the incoming iFlow Message
  * @return the iFlow Message with the aggregated SOAP-wrapped XML set as body
@@ -754,6 +751,7 @@ class LoggerService {
         return this
     }
 }
+
 
 
 
