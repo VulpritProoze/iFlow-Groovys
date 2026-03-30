@@ -3,19 +3,16 @@ Agent-only concise guide for creating custom mappings.
 General rules:
 - Do not modify helper code (extractMappedRecords, extractRecordsFromPayload, isFdoneOne, LoggerService, SOAP/OData helpers).
 - Do not modify the `Constants` class.
-- For custom logic: only edit the `try` block inside `processData()`.
-- For simple one-to-one mappings: only update `Constants.MAPPING`.
+- Edit the `try` block ONLY inside `processData()`.
 - Preserve the last two lines in the `try` block (they set the body and call `logger.logBoth`).
 - Use `logger.logBoth(...)` on every API call success or error.
-- When creating custom methods, always use Result pattern [status: status, message: message, payload: payload].
+- When creating custom methods, always use Result pattern [status: status, message: message, payload: payload], and put them below processData.
 - When using helper methods, expect that the result uses Result pattern. see [AGENTS.md](/AGENTS.md)
 
 Specific rules:
 - Use `extractRecordsFromPayload(payload)` to obtain `<record>` nodes (handles escaped inner `Result` XML).
 - Example inner record (payload-agnostic):
 	<record id="ID"><field1>v1</field1><field2>v2</field2></record>
-- `extractMappedRecords(...)` returns a result map: `[status: number, message: String, payload: List<Map>]`.
-	The working mapped collection is `mappedRecords` (a List of Maps) before `JsonOutput.toJson(...)`.
 - Never use for-each instead of for-loop, if we want to iterate over a record, or if we know that the loop code will span many lines of code. We want to ensure that we can early return anywhere in the processData.
 
 SAP payload examples (agnostic):
