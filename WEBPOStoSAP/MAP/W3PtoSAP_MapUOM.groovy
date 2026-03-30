@@ -201,32 +201,50 @@ def Message processData(Message message) {
 
             for (int d = 0; d < defNodes.size(); d++) {
                 def dn = defNodes[d]
-                def altUomCode = dn.fuom?.text() ?: ''
-                def baseQty = dn.fqty?.text() ?: ''
+
+                // Helper: coerce values to BigDecimal when possible
+                def toBig = { val ->
+                    if (val == null) return null
+                    if (val instanceof Number) return new BigDecimal(val.toString())
+                    try {
+                        def s = (val instanceof GPathResult) ? val.text().toString().trim() : val.toString().trim()
+                        if (s == '') return null
+                        return new BigDecimal(s)
+                    } catch (e) { return null }
+                }
+
+                def altUomText = dn.fuom?.toString()?.trim() ?: ''
+                def altUomNum = toBig(dn.fuom)
+                def baseQtyNum = toBig(dn.fqty) ?: new BigDecimal(0)
 
                 // Attempt to resolve alternate UoM in SAP (best-effort)
-                def altResolved = altUomCode
-                if (altUomCode) {
-                    def altRes = postUoMSAP(message, altUomCode, odataConn)
-                    // Log alternate UoM resolution
+                def altResolved = null
+                if (altUomText) {
+                    def altRes = postUoMSAP(message, altUomText, odataConn)
                     if (altRes?.status == 1) {
-                        logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_UOM_RESOLVE", title: Constants.LOG_RECID, status: "OK", inputPayload: "Resolve AltUoM: ${altUomCode}", outputPayload: altRes.payload))
+                        logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_UOM_RESOLVE", title: Constants.LOG_RECID, status: "OK", inputPayload: "Resolve AltUoM: ${altUomText}", outputPayload: altRes.payload))
                     } else {
-                        logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_UOM_RESOLVE", title: Constants.LOG_RECID, status: "ERROR", inputPayload: "Resolve AltUoM: ${altUomCode}", outputPayload: altRes?.message ?: altRes))
+                        logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_UOM_RESOLVE", title: Constants.LOG_RECID, status: "ERROR", inputPayload: "Resolve AltUoM: ${altUomText}", outputPayload: altRes?.message ?: altRes))
                     }
                     if (altRes?.status == 1 && altRes.payload != null) {
                         def pp = altRes.payload
                         try {
                             if (pp instanceof Map && pp.containsKey('value') && pp.value.size() > 0) {
-                                altResolved = pp.value[0].AbsEntry ?: altUomCode
+                                altResolved = toBig(pp.value[0].AbsEntry) ?: toBig(pp.value[0].UoMEntry) ?: toBig(pp.value[0].Code)
                             } else if (pp instanceof Map && pp.containsKey('UoMEntry')) {
-                                altResolved = pp.UoMEntry ?: altUomCode
+                                altResolved = toBig(pp.UoMEntry)
                             }
-                        } catch (e) { altResolved = altUomCode }
+                        } catch (e) { altResolved = null }
                     }
                 }
 
-                defsList << [AlternateUoM: altResolved, BaseQuantity: baseQty, AlternateQuantity: "1"]
+                // Fallbacks: prefer resolved numeric, then numeric parsed from input, otherwise null
+                if (altResolved == null) altResolved = altUomNum
+
+                // Ensure AlternateQuantity is numeric (BigDecimal)
+                def altQtyNum = new BigDecimal(1)
+
+                defsList << [AlternateUoM: altResolved, BaseQuantity: baseQtyNum, AlternateQuantity: altQtyNum]
             }
 
             mapped << [Code: fuomid, Name: fname, BaseUoM: baseResolved, UoMGroupDefinitionCollection: defsList]
