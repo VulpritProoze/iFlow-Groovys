@@ -48,7 +48,6 @@ class Constants {
  * Expects `SESSION_VAR_PROP_NAME` and `BASE_URL_PROP_NAME` to be available as message
  * properties for session and service endpoint. Logs summary and details of the batch result.
  *
- * Note: This code is not customizable.
  */
 def Message processData(Message message) {
     def logger = new LoggerService(messageLogFactory, message)
@@ -98,6 +97,11 @@ def Message processData(Message message) {
     batchBody.append("--${batchId}\r\n")
     batchBody.append("Content-Type: multipart/mixed; boundary=${changesetId}\r\n\r\n")
 
+    /*
+     * This part of the code is customizable. We can do api calls here to SAP, to for example,
+     * check if the endpoint already has those items that we want to POST (POST is not idempotent).
+     * Sometimes, we want to PATCH it instead. 
+    */
     recordList.each { record ->
         batchBody.append(sapRequestBatchBodyBuilder(record, changesetId, "POST"))
     }
