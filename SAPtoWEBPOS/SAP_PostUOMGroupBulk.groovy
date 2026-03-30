@@ -137,13 +137,7 @@ def Message processData(Message message) {
 
     // 3. Setup Request Object
     // We map the batchBody string to the 'payload' field as defined in your DTO
-    def request = new ODataRequestBody(
-        url: "/\$batch",
-        payload: batchBody.toString(),
-        requestProperty: [
-            'Content-Type': "multipart/mixed; boundary=${batchId}"
-        ]
-    )
+    def request = new ODataRequestBody(url: "/\$batch", payload: batchBody.toString(), requestProperty: [ 'Content-Type': "multipart/mixed; boundary=${batchId}" ])
 
     try {
         // Your connection class 'post' method writes request.payload to the output stream
