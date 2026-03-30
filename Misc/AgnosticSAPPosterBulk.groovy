@@ -88,37 +88,8 @@ def Message processData(Message message) {
 
     def recordList = new JsonSlurper().parseText(payload) 
 
-    // 1. Define Unique Boundaries
-    String batchId = "batch_" + java.util.UUID.randomUUID().toString()
-    String changesetId = "changeset_" + java.util.UUID.randomUUID().toString()
-
-    // 2. Build the Multipart Batch Body
-    // Note: Using \r\n (CRLF) is mandatory for multipart/mixed standards
-    StringBuilder batchBody = new StringBuilder()
-    batchBody.append("--${batchId}\r\n")
-    batchBody.append("Content-Type: multipart/mixed; boundary=${changesetId}\r\n\r\n")
-
-    recordList.each { record ->
-        batchBody.append("--${changesetId}\r\n")
-        batchBody.append("Content-Type: application/http\r\n")
-        batchBody.append("Content-Transfer-Encoding: binary\r\n\r\n")
-        batchBody.append("POST /b1s/v1${Constants.ENTITY_ENDPOINT}\r\n")
-        batchBody.append("Content-Type: application/json\r\n\r\n")
-        batchBody.append(JsonOutput.toJson(record)).append("\r\n\r\n")
-    }
-
-    batchBody.append("--${changesetId}--\r\n")
-    batchBody.append("--${batchId}--")
-
-    // 3. Setup Request Object
-    // We map the batchBody string to the 'payload' field as defined in your DTO
-    def request = new ODataRequestBody(
-        url: "/\$batch",
-        payload: batchBody.toString(),
-        requestProperty: [
-            'Content-Type': "multipart/mixed; boundary=${batchId}"
-        ]
-    )
+    // Build the multipart batch request from the record list
+    def request = sapRequestBatchBuilder(recordList)
 
     def conn = new HTTPODataConnection(baseUrl).setSessionCookie(sessionCookie)
 
@@ -144,6 +115,40 @@ def Message processData(Message message) {
     }
 
     return message
+}
+
+
+/**
+ * Build an OData $batch multipart request from a list of records.
+ * Returns an `ODataRequestBody` ready to be posted by `HTTPODataConnection.post()`.
+ */
+def sapRequestBatchBuilder(recordList) {
+    String batchId = "batch_" + java.util.UUID.randomUUID().toString()
+    String changesetId = "changeset_" + java.util.UUID.randomUUID().toString()
+
+    StringBuilder batchBody = new StringBuilder()
+    batchBody.append("--${batchId}\r\n")
+    batchBody.append("Content-Type: multipart/mixed; boundary=${changesetId}\r\n\r\n")
+
+    recordList.each { record ->
+        batchBody.append("--${changesetId}\r\n")
+        batchBody.append("Content-Type: application/http\r\n")
+        batchBody.append("Content-Transfer-Encoding: binary\r\n\r\n")
+        batchBody.append("POST /b1s/v1${Constants.ENTITY_ENDPOINT}\r\n")
+        batchBody.append("Content-Type: application/json\r\n\r\n")
+        batchBody.append(JsonOutput.toJson(record)).append("\r\n\r\n")
+    }
+
+    batchBody.append("--${changesetId}--\r\n")
+    batchBody.append("--${batchId}--")
+
+    return new ODataRequestBody(
+        url: "/\$batch",
+        payload: batchBody.toString(),
+        requestProperty: [
+            'Content-Type': "multipart/mixed; boundary=${batchId}"
+        ]
+    )
 }
 
 
