@@ -7,6 +7,8 @@ General rules:
 - For simple one-to-one mappings: only update `Constants.MAPPING`.
 - Preserve the last two lines in the `try` block (they set the body and call `logger.logBoth`).
 - Use `logger.logBoth(...)` on every API call success or error.
+- When creating custom methods, always use Result pattern [status: status, message: message, payload: payload].
+- When using helper methods, expect that the result uses Result pattern. see [AGENTS.md](/AGENTS.md)
 
 Specific rules:
 - Use `extractRecordsFromPayload(payload)` to obtain `<record>` nodes (handles escaped inner `Result` XML).
@@ -14,6 +16,22 @@ Specific rules:
 	<record id="ID"><field1>v1</field1><field2>v2</field2></record>
 - `extractMappedRecords(...)` returns a result map: `[status: number, message: String, payload: List<Map>]`.
 	The working mapped collection is `mappedRecords` (a List of Maps) before `JsonOutput.toJson(...)`.
+- Never use for-each instead of for-loop, if we want to iterate over a record, or if we know that the loop code will span many lines of code. We want to ensure that we can early return anywhere in the processData.
+
+SAP payload examples (agnostic):
+- GET (OData list): ignore `odata.metadata`; items are under `value` as an array of objects.
+	Example (fields omitted for brevity):
+	{
+		"value": [ { "ItemCode": "A1", "ItemName": "..." , /* other fields */ }, { "ItemCode": "A2", "ItemName": "..." } ]
+	}
+- POST (single entity): resulting object contains the entity fields at top-level (metadata may be present but can be ignored).
+	Example:
+	{
+		"Code": "carton3",
+		"Name": "carton",
+		"Length1": 0.0,
+		/* other entity fields */
+	}
 
 Prompt template for a human (what to write after agent reads this guide):
 - If simple mapping: "Update `Constants.MAPPING` to map source tokens to target fields. Example: Constants.MAPPING = ["Code":"fuomid","Name":"fname"]"
