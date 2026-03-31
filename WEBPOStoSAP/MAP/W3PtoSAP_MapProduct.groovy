@@ -78,13 +78,13 @@ class Constants {
         "Valid": "factive_flag",
         "SupplierCatalogNo": "falternate1",
         "AvgStdPrice": "fstnd_cost",
-        "ProdStdPrice": "fstnd_cost"
+        "ProdStdCost": "fstnd_cost"
     ]
     static final Map CUSTOM_RULES = [
         "VatLiable": { val -> (val == "0") ? "tNO" : "tYES" },
         "SalesItem": { val -> (val == "0") ? "tNO" : "tYES" },
         "InventoryItem": { val -> (val == "0") ? "tNO" : "tYES" },
-        "Valid": { val -> (val == "0") ? "tYES" : "tNO" },
+        "Valid": { val -> (val == "0") ? "tNO" : "tYES" },
     ]
 
     // Logging Constant/s
@@ -523,7 +523,14 @@ def isFdoneOne(String payload, String flastBatchId = null) {
         // If there's an inner <Result> string, unescape and parse it then search for fdone
         def innerXml = envelope.Body?.callResponse?.Result?.text() ?: envelope.'**'.find { it.name() == 'Result' }?.text()
         if (innerXml) {
-            def innerUnescaped = unescapeXml(innerXml)
+            // Ensure we don't pass stray unescaped '&' to the XML parser which
+            // throws "The entity name must immediately follow the '&'...".
+            def sanitizeXml = { String s ->
+                if (s == null) return ''
+                return s.replaceAll(/&(?!([A-Za-z0-9]+|#\d+|#x[0-9A-Fa-f]+);)/, '&amp;')
+            }
+
+            def innerUnescaped = sanitizeXml(unescapeXml(innerXml))
             try {
                 def innerRoot = newSafeSlurper().parseText(innerUnescaped)
                 def innerFdone = innerRoot.'**'.find { it.name() == 'fdone' }
@@ -584,7 +591,12 @@ def extractRecordsFromPayload(String payload) {
     // Prefer inner <Result> content when present (may contain escaped inner XML)
     def innerXml = envelope.Body?.callResponse?.Result?.text() ?: envelope.'**'.find { it.name() == 'Result' }?.text()
     if (innerXml) {
-        def innerUnescaped = unescapeXml(innerXml)
+        def sanitizeXml = { String s ->
+            if (s == null) return ''
+            return s.replaceAll(/&(?!([A-Za-z0-9]+|#\d+|#x[0-9A-Fa-f]+);)/, '&amp;')
+        }
+
+        def innerUnescaped = sanitizeXml(unescapeXml(innerXml))
         def innerRoot = newSafeSlurper().parseText(innerUnescaped)
         def gRecords = []
         try { gRecords = innerRoot.data.record } catch (e) { gRecords = [] }
