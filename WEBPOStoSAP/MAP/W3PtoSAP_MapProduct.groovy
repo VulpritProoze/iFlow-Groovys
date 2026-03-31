@@ -31,7 +31,6 @@ class Constants {
     static final String STEP_NAME = "W3PtoSAP_MapProduct"
 
     // For FDone checking
-    static final String LAST_BATCHID_PROP_NAME = "[ProjectName]_[Action]_[flast_batchid]"
 
     /**
      * QUICK NOTE: This mapping constant is not intended for customized mapping. This is only for simple
@@ -139,12 +138,8 @@ def Message processData(Message message) {
         payload = (message.getBody(java.lang.String) ?: '')
     }
 
-    // If the W3P response indicates processing is done (fdone == 1),
-    // short-circuit and return an empty mapping to avoid downstream work.
-    // Extract last-batch id property and pass it to the fdone checker so
-    // we can additionally validate the payload's <flast_batchid>.
-    def flastBatchProp = message.getProperty(Constants.LAST_BATCHID_PROP_NAME)
-    if (isFdoneOne(payload, flastBatchProp)) {
+    // End process if /GET returns last page with no records
+    if (isFdoneOne(payload)) {
         logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_FDONE", title: Constants.LOG_RECID, status: "OK", inputPayload: payload, outputPayload: "fdone == 1 - skipping mapping"))
         message.setBody(JsonOutput.toJson([]))
         return message
@@ -459,7 +454,7 @@ def extractMappedRecords(String payload, Map mapping, Map customRules = [:]) {
  * an <fdone> element with value '1'. This is used to skip mapping when
  * W3P indicates processing is finished.
  */
-def isFdoneOne(String payload, String flastBatchId = null) {
+def isFdoneOne(String payload) {
     if (!payload) return false
     payload = payload.toString()
 
@@ -496,27 +491,16 @@ def isFdoneOne(String payload, String flastBatchId = null) {
         def sl = newSafeSlurper()
         def envelope = sl.parseText(payload)
 
-        // Helper to validate flast_batchid presence/equality
-        def validateFlast = { root ->
-            def flast = root.'**'.find { it.name() == 'flast_batchid' || it.name() == 'flastbatchid' }?.text()?.trim()
-            if (flast) {
-                if (flastBatchId) {
-                    return (flast == flastBatchId)
-                }
-            }
-            // flast not present => fail stronger check
-            return false
-        }
-
         // Look for direct <fdone> in envelope
         def direct = envelope.'**'.find { it.name() == 'fdone' }
         if (direct && direct.text()?.trim() == '1') {
-            // require flast_batchid in payload and optionally match provided property
-            return validateFlast(envelope)
+            // Previously we validated flast_batchid; that check is removed — any fdone==1 means done
+            return true
         }
 
         // If there's an inner <Result> string, unescape and parse it then search for fdone
         def innerXml = envelope.Body?.callResponse?.Result?.text() ?: envelope.'**'.find { it.name() == 'Result' }?.text()
+        def hasRecords = false
         if (innerXml) {
             // Ensure we don't pass stray unescaped '&' to the XML parser which
             // throws "The entity name must immediately follow the '&'...".
@@ -530,11 +514,24 @@ def isFdoneOne(String payload, String flastBatchId = null) {
                 def innerRoot = newSafeSlurper().parseText(innerUnescaped)
                 def innerFdone = innerRoot.'**'.find { it.name() == 'fdone' }
                 if (innerFdone && innerFdone.text()?.trim() == '1') {
-                    return validateFlast(innerRoot)
+                    return true
                 }
+
+                // Check for <record> nodes inside inner content
+                try { hasRecords = (innerRoot.data?.record?.size() ?: 0) > 0 } catch (e) { hasRecords = false }
             } catch (e) {
                 // ignore parsing errors of inner content
             }
+        }
+
+        // Fallback: check for <record> directly under envelope
+        if (!hasRecords) {
+            try { hasRecords = (envelope.data?.record?.size() ?: 0) > 0 } catch (e) { hasRecords = false }
+        }
+
+        // New rule: if there are no <record> items found in payload, treat as done/skip
+        if (!hasRecords) {
+            return true
         }
     } catch (e) {
         return false
