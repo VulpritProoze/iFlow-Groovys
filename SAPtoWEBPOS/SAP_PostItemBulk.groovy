@@ -109,7 +109,7 @@ def Message processData(Message message) {
         def itemCode = (record?.ItemCode?.toString() ?: '').trim()
         if (!itemCode) {
             // missing ItemCode -> skip
-            return
+            continue
         }
 
         // escape single quotes for OData literals
@@ -118,7 +118,7 @@ def Message processData(Message message) {
         if (check?.status != 1) {
             // GET failed (network/server) -> skip this record to avoid adding failures to batch
             logger.logBoth(new LogRequest(stepName: Constants.STEP_NAME, title: Constants.LOG_RECID, status: "ERROR", inputPayload: itemCode, outputPayload: "OData GET failed: ${check?.message}"))
-            return
+            continue
         }
 
         // Determine if the GET returned any existing items
@@ -133,7 +133,7 @@ def Message processData(Message message) {
         if (exists) {
             // item exists -> skip POST to avoid duplicate error
             logger.logBoth(new LogRequest(stepName: Constants.STEP_NAME, title: Constants.LOG_RECID, status: "OK", inputPayload: itemCode, outputPayload: "Item exists; skipping POST"))
-            return
+            continue
         }
 
         batchBody.append(sapRequestBatchBodyBuilder(record, changesetId, "POST"))
