@@ -120,9 +120,6 @@ def Message processData(Message message) {
     return message
 }
 
-/**
-
-
 
 /**
  * Represents the configuration for an HTTP OData request.
