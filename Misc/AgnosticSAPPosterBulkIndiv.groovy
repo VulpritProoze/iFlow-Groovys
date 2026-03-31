@@ -50,7 +50,6 @@ class Constants {
  * Expects `SESSION_VAR_PROP_NAME` and `BASE_URL_PROP_NAME` to be available as message
  * properties for session and service endpoint. Logs summary and details of the batch result.
  *
- * Customizability: See line 101 - 108
  */
 def Message processData(Message message) {
     def logger = new LoggerService(messageLogFactory, message)
