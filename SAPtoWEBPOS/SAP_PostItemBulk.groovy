@@ -114,10 +114,10 @@ def Message processData(Message message) {
 
         // escape single quotes for OData literals
         def escCode = itemCode.replace("'", "''")
-        def check = conn.get(ODataRequestBody(url: "/Items?\$filter=ItemCode%20eq%20'${escCode}'"))
+        def check = conn.get(new ODataRequestBody(url: "/Items?\$filter=ItemCode%20eq%20'${escCode}'"))
         if (check?.status != 1) {
             // GET failed (network/server) -> skip this record to avoid adding failures to batch
-            logger.logInternal(new LogRequest(stepName: Constants.STEP_NAME, title: Constants.LOG_RECID, status: "ERROR", inputPayload: itemCode, outputPayload: "OData GET failed: ${check?.message}"))
+            logger.logBoth(new LogRequest(stepName: Constants.STEP_NAME, title: Constants.LOG_RECID, status: "ERROR", inputPayload: itemCode, outputPayload: "OData GET failed: ${check?.message}"))
             return
         }
 
@@ -132,7 +132,7 @@ def Message processData(Message message) {
 
         if (exists) {
             // item exists -> skip POST to avoid duplicate error
-            logger.logInternal(new LogRequest(stepName: Constants.STEP_NAME, title: Constants.LOG_RECID, status: "OK", inputPayload: itemCode, outputPayload: "Item exists; skipping POST"))
+            logger.logBoth(new LogRequest(stepName: Constants.STEP_NAME, title: Constants.LOG_RECID, status: "OK", inputPayload: itemCode, outputPayload: "Item exists; skipping POST"))
             return
         }
 
