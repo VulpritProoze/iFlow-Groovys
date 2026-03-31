@@ -120,7 +120,7 @@ def Message processData(Message message) {
                 def getRes = conn.get(new ODataRequestBody(url: filterUrl))
                 if (getRes.status == 1 && getRes.payload?.value && getRes.payload.value.size() > 0) {
                     method = 'PATCH'
-                    id = (getRes.payload.value[0].AbsEntry) // mind the type of the id
+                    id = getRes.payload.value[0].AbsEntry // mind the type of the id
                 } else {
                     method = 'POST'
                 }
