@@ -87,6 +87,7 @@ def Message processData(Message message) {
     def baseUrl = sapCreds.baseUrl
 
     def recordList = new JsonSlurper().parseText(payload) 
+    def conn = new HTTPODataConnection(baseUrl).setSessionCookie(sessionCookie)
 
     // 1. Define Unique Boundaries
     String batchId = "batch_" + java.util.UUID.randomUUID().toString()
@@ -103,7 +104,37 @@ def Message processData(Message message) {
      * check if the endpoint already has those items that we want to POST (POST is not idempotent).
      * Sometimes, we want to PATCH it instead. 
     */
-    recordList.each { record ->
+    for (int i = 0; i < recordList.size(); i++) {
+        def itemCode = (record?.ItemCode?.toString() ?: '').trim()
+        if (!itemCode) {
+            // missing ItemCode -> skip
+            return
+        }
+
+        // escape single quotes for OData literals
+        def escCode = itemCode.replace("'", "''")
+        def check = conn.get(ODataRequestBody(url: "/Items?\$filter=ItemCode%20eq%20'${escCode}'"))
+        if (check?.status != 1) {
+            // GET failed (network/server) -> skip this record to avoid adding failures to batch
+            logger.logInternal(new LogRequest(stepName: Constants.STEP_NAME, title: Constants.LOG_RECID, status: "ERROR", inputPayload: itemCode, outputPayload: "OData GET failed: ${check?.message}"))
+            return
+        }
+
+        // Determine if the GET returned any existing items
+        def exists = false
+        try {
+            if (check.payload instanceof List && check.payload.size() > 0) exists = true
+            else if (check.payload instanceof Map && check.payload.value instanceof List && check.payload.value.size() > 0) exists = true
+        } catch (e) {
+            exists = false
+        }
+
+        if (exists) {
+            // item exists -> skip POST to avoid duplicate error
+            logger.logInternal(new LogRequest(stepName: Constants.STEP_NAME, title: Constants.LOG_RECID, status: "OK", inputPayload: itemCode, outputPayload: "Item exists; skipping POST"))
+            return
+        }
+
         batchBody.append(sapRequestBatchBodyBuilder(record, changesetId, "POST"))
     }
 
@@ -119,8 +150,6 @@ def Message processData(Message message) {
             'Content-Type': "multipart/mixed; boundary=${batchId}"
         ]
     )
-
-    def conn = new HTTPODataConnection(baseUrl).setSessionCookie(sessionCookie)
 
     try {
         // Your connection class 'post' method writes request.payload to the output stream
