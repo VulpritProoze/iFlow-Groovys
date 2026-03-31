@@ -181,12 +181,7 @@ def Message processData(Message message) {
         logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_OK", title: Constants.LOG_RECID, status: "OK", inputPayload: payload, outputPayload: JsonOutput.prettyPrint(jsonResult))) 
     } catch (Exception e) {
         message.setBody(JsonOutput.toJson([]))
-        def stackTrace = e.stackTrace.take(15).join('\n')
-        def logErrResult = logger.logBoth(new LogRequest(stepName: Constants.STEP_NAME, title: Constants.LOG_RECID, status: "ERROR", inputPayload: "Original Payload length: ${payload?.length() ?: 0}", outputPayload: "Exception: ${e.message}\nStacktrace: ${stackTrace}"))
-
-        if (logErrResult.status != 1) {
-            logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_UNHANDLED_ERR", title: Constants.LOG_RECID, status: "ERROR", inputPayload: payload, outputPayload: "Failed to log original error to process: ${logErrResult.message}\n\nOriginal Error: ${e.message}"))
-        }
+        logger.logBoth(new LogRequest(stepName: Constants.STEP_NAME, title: Constants.LOG_RECID, status: "ERROR", inputPayload: "Original Payload length: ${payload?.length() ?: 0}", outputPayload: "Exception: ${e.message}\nStacktrace: ${e.stackTrace.join('\n')}"))
     }
     
     return message

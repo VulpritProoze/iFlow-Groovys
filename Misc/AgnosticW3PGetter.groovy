@@ -132,7 +132,7 @@ def Message processData(Message message) {
         message.setBody(responseXml)
 
     } catch (Exception e) {
-        logger.logBoth(new LogRequest(title: Constants.LOG_RECID, stepName: Constants.STEP_NAME, status: "ERROR", inputPayload: payload, outputPayload: "Exception: ${e.message}\nStacktrace: ${e.stackTrace.take(5).join('\n')}"))
+        logger.logBoth(new LogRequest(title: Constants.LOG_RECID, stepName: Constants.STEP_NAME, status: "ERROR", inputPayload: payload, outputPayload: "Exception: ${e.message}\nStacktrace: ${e.stackTrace.join('\n')}"))
     }
     
     return message
