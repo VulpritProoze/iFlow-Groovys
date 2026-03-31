@@ -165,7 +165,7 @@ def Message processData(Message message) {
         logger.logBoth(new LogRequest(stepName: Constants.STEP_NAME, title: Constants.LOG_RECID, status: "OK", inputPayload: payload, outputPayload: JsonOutput.prettyPrint(jsonResult))) 
     } catch (Exception e) {
         message.setBody(JsonOutput.toJson([]))
-        logger.logBoth(new LogRequest(stepName: Constants.STEP_NAME, title: Constants.LOG_RECID, status: "ERROR", inputPayload: "Original Payload length: ${payload?.length() ?: 0}", outputPayload: "Exception: ${e.message}\nStacktrace: ${e.stackTrace.join('\n')}"))
+        logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_UNHANDLED_ERR", title: Constants.LOG_RECID, status: "ERROR", inputPayload: "Original Payload length: ${payload?.length() ?: 0}", outputPayload: "Exception: ${e.message}\nStacktrace: ${e.stackTrace.join('\n')}"))
     }
     
     return message
