@@ -87,6 +87,7 @@ def Message processData(Message message) {
     def baseUrl = sapCreds.baseUrl
 
     def recordList = new JsonSlurper().parseText(payload) 
+    def conn = new HTTPODataConnection(baseUrl).setSessionCookie(sessionCookie)
 
     // 1. Define Unique Boundaries
     String batchId = "batch_" + java.util.UUID.randomUUID().toString()
@@ -120,7 +121,6 @@ def Message processData(Message message) {
         ]
     )
 
-    def conn = new HTTPODataConnection(baseUrl).setSessionCookie(sessionCookie)
 
     try {
         // Your connection class 'post' method writes request.payload to the output stream
