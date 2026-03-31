@@ -156,19 +156,19 @@ def Message processData(Message message) {
         def result = extractMappedRecords(payload, Constants.MAPPING, Constants.CUSTOM_RULES)
 
         if (!(result instanceof Map)) {
-            logger.logBoth(new LogRequest(stepName: "MAPPING_FAILURE", title: Constants.LOG_RECID, status: "ERROR", inputPayload: payload, outputPayload: "Mapper returned unexpected type"))
+            logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_MAPPING_FAILURE", title: Constants.LOG_RECID, status: "ERROR", inputPayload: payload, outputPayload: "Mapper returned unexpected type"))
             return message
         }
 
         if (result.status != 1) {
-            logger.logBoth(new LogRequest(stepName: "MAPPING_ERROR", title: Constants.LOG_RECID, status: "ERROR", inputPayload: payload, outputPayload: result.message ?: 'Mapping failed'))
+            logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_MAPPING_ERROR", title: Constants.LOG_RECID, status: "ERROR", inputPayload: payload, outputPayload: result.message ?: 'Mapping failed'))
             return message
         }
 
         def mappedRecords = result.payload ?: []
 
         if (mappedRecords.isEmpty() && payload.trim().startsWith("<")) {
-            logger.logBoth(new LogRequest(stepName: "MAPPING_NO_RECORDS", title: Constants.LOG_RECID, status: "ERROR", inputPayload: payload, outputPayload: "No records found or failed to parse XML <Result>."))
+            logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_MAPPING_NO_RECORDS", title: Constants.LOG_RECID, status: "ERROR", inputPayload: payload, outputPayload: "No records found or failed to parse XML <Result>."))
             return message // Premature return instead of exception
         }
 
@@ -178,14 +178,14 @@ def Message processData(Message message) {
         // If needed be, do not remove these two lines of code when customizing. Set the result of the custom mapping
         // to a jsonResult instead (jsonResult must, of course, be json)
         message.setBody(jsonResult)
-        logger.logBoth(new LogRequest(stepName: Constants.STEP_NAME, title: Constants.LOG_RECID, status: "OK", inputPayload: payload, outputPayload: JsonOutput.prettyPrint(jsonResult))) 
+        logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_OK", title: Constants.LOG_RECID, status: "OK", inputPayload: payload, outputPayload: JsonOutput.prettyPrint(jsonResult))) 
     } catch (Exception e) {
         message.setBody(JsonOutput.toJson([]))
         def stackTrace = e.stackTrace.take(15).join('\n')
         def logErrResult = logger.logBoth(new LogRequest(stepName: Constants.STEP_NAME, title: Constants.LOG_RECID, status: "ERROR", inputPayload: "Original Payload length: ${payload?.length() ?: 0}", outputPayload: "Exception: ${e.message}\nStacktrace: ${stackTrace}"))
 
         if (logErrResult.status != 1) {
-            logger.logBoth(new LogRequest(stepName: "ERROR_LOGGING_FAILURE", title: Constants.LOG_RECID, status: "ERROR", inputPayload: payload, outputPayload: "Failed to log original error to process: ${logErrResult.message}\n\nOriginal Error: ${e.message}"))
+            logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_UNHANDLED_ERR", title: Constants.LOG_RECID, status: "ERROR", inputPayload: payload, outputPayload: "Failed to log original error to process: ${logErrResult.message}\n\nOriginal Error: ${e.message}"))
         }
     }
     
