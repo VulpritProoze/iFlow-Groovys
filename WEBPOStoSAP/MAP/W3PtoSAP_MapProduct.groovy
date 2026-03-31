@@ -174,9 +174,6 @@ def Message processData(Message message) {
 
         // 2. Wrap it in a uniform JSON structure
         def jsonResult = JsonOutput.toJson(mappedRecords)
-        if (logResult.status != 1) {
-            logger.logBoth(new LogRequest(stepName: "PROCESS_LOG_FAILURE", title: Constants.LOG_RECID, status: "ERROR", inputPayload: payload, outputPayload: "LogProcess failed: ${logResult.message}"))
-        }
         
         // If needed be, do not remove these two lines of code when customizing. Set the result of the custom mapping
         // to a jsonResult instead (jsonResult must, of course, be json)
