@@ -95,6 +95,26 @@ def Message processData(Message message) {
         def record = recordList[i]
         def stepNameIndexed = "${Constants.STEP_NAME}_${i + 1}"
 
+        // extract first field/key and its value in an agnostic way
+        def firstKey = ''
+        def firstValue = ''
+        try {
+            if (record instanceof Map && !record.isEmpty()) {
+                def it = record.entrySet().iterator()
+                if (it.hasNext()) {
+                    def e = it.next()
+                    firstKey = e.key?.toString() ?: ''
+                    firstValue = (e.value != null ? e.value.toString() : '')
+                }
+            } else if (record instanceof List && record.size() > 0) {
+                firstKey = '0'
+                firstValue = record[0]?.toString() ?: ''
+            }
+        } catch (e) {
+            firstKey = ''
+            firstValue = ''
+        }
+
         try {
             def req = new ODataRequestBody()
             req.url = Constants.ENTITY_ENDPOINT
@@ -104,10 +124,10 @@ def Message processData(Message message) {
             def res = conn.post(req)
             if (res?.status == 1) {
                 // collect minimal success info (avoid logging every success)
-                successItems << [index: i + 1, ItemCode: record?.ItemCode ?: '']
+                successItems << [index: i + 1, firstField: firstKey, firstValue: firstValue]
                 results << [index: i + 1, status: 'OK']
             } else {
-                errorItems << [index: i + 1, ItemCode: record?.ItemCode ?: '', message: res?.message, payload: res?.payload]
+                errorItems << [index: i + 1, firstField: firstKey, firstValue: firstValue, message: res?.message, payload: res?.payload]
                 results << [index: i + 1, status: 'ERROR', message: res?.message]
             }
         } catch (Exception e) {
@@ -122,7 +142,7 @@ def Message processData(Message message) {
             endpoint: Constants.ENTITY_ENDPOINT,
             totalItems: recordList.size(),
             successfulCount: successItems.size(),
-            sampleItemCodes: successItems.collect { it.ItemCode }[0..Math.max(0, Math.min(successItems.size()-1, 19))]
+            sampleFirstValues: successItems.collect { it.firstValue }[0..Math.max(0, Math.min(successItems.size()-1, 19))]
         ]
         def prettySuccess = JsonOutput.prettyPrint(JsonOutput.toJson(successSummary))
         logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_SUCCESS", title: Constants.LOG_RECID, status: "OK", inputPayload: "Processed ${recordList.size()} items", outputPayload: prettySuccess))
