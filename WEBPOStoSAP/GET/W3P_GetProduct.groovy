@@ -84,7 +84,7 @@ def Message processData(Message message) {
         }
 
         def responseXml = pagRes.payload?.toString() ?: ""
-        logger.logBoth(new LogRequest(title: Constants.LOG_RECID, stepName: "${Constants.STEP_NAME}_OK", status: "OK", inputPayload: payload, outputPayload: responseXml))
+        logger.logBoth(new LogRequest(title: Constants.LOG_RECID, stepName: "${Constants.STEP_NAME}_OK", status: "OK", inputPayload: '', outputPayload: responseXml))
 
         // Extract W3P fields (fnew_batchid, flast_batchid, flast_key, fdone)
         def extractRes = extractW3PTimestampAndBatch(responseXml)
@@ -96,10 +96,10 @@ def Message processData(Message message) {
                 message.setProperty(Constants.LAST_KEY_PROP_NAME, p.fkey ?: '')
                 message.setProperty(Constants.FDONE_PROP_NAME, p.fdone ?: '')
             } catch (e) {
-                logger.logBoth(new LogRequest(title: Constants.LOG_RECID, stepName: "${Constants.STEP_NAME}_ERR", status: "ERROR", inputPayload: payload, outputPayload: "Failed setting W3P properties: ${e.message}"))
+                logger.logBoth(new LogRequest(title: Constants.LOG_RECID, stepName: "${Constants.STEP_NAME}_ERR", status: "ERROR", inputPayload: '', outputPayload: "Failed setting W3P properties: ${e.message}"))
             }
         } else {
-            logger.logBoth(new LogRequest(title: Constants.LOG_RECID, stepName: "${Constants.STEP_NAME}_ERR", status: "ERROR", inputPayload: payload, outputPayload: "extractW3PTimestampAndBatch failed: ${extractRes?.message}"))
+            logger.logBoth(new LogRequest(title: Constants.LOG_RECID, stepName: "${Constants.STEP_NAME}_ERR", status: "ERROR", inputPayload: '', outputPayload: "extractW3PTimestampAndBatch failed: ${extractRes?.message}"))
         }
 
         message.setBody(responseXml)
