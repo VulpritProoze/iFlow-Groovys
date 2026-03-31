@@ -45,11 +45,6 @@ class Constants {
 /**
  * Process the incoming response and post all contained records to SAP in one bulk request.
  *
- * Parses the message body (SOAP or JSON), extracts all <record> elements, converts them
- * to JSON, and submits them as a single multipart OData $batch (changeset) POST.
- * Expects `SESSION_VAR_PROP_NAME` and `BASE_URL_PROP_NAME` to be available as message
- * properties for session and service endpoint. Logs summary and details of the batch result.
- *
  */
 def Message processData(Message message) {
     def logger = new LoggerService(messageLogFactory, message)
@@ -87,79 +82,80 @@ def Message processData(Message message) {
     def sessionCookie = sapCreds.sessionCookie
     def baseUrl = sapCreds.baseUrl
 
-    def recordList = new JsonSlurper().parseText(payload) 
-    def conn = new HTTPODataConnection(baseUrl).setSessionCookie(sessionCookie)
+    try {
+        def recordList = new JsonSlurper().parseText(payload) 
+        def conn = new HTTPODataConnection(baseUrl).setSessionCookie(sessionCookie)
 
-    def results = []
-    def successItems = []
-    def errorItems = []
+        def results = []
+        def successItems = []
+        def errorItems = []
 
-    for (int i = 0; i < recordList.size(); i++) {
-        def record = recordList[i]
-        def stepNameIndexed = "${Constants.STEP_NAME}_${i + 1}"
+        for (int i = 0; i < recordList.size(); i++) {
+            def record = recordList[i]
+            def stepNameIndexed = "${Constants.STEP_NAME}_${i + 1}"
 
-        // extract first field/key and its value in an agnostic way
-        def firstKey = ''
-        def firstValue = ''
-        try {
-            if (record instanceof Map && !record.isEmpty()) {
-                def it = record.entrySet().iterator()
-                if (it.hasNext()) {
-                    def e = it.next()
-                    firstKey = e.key?.toString() ?: ''
-                    firstValue = (e.value != null ? e.value.toString() : '')
+            // extract first field/key and its value in an agnostic way
+            def firstKey = ''
+            def firstValue = ''
+            try {
+                if (record instanceof Map && !record.isEmpty()) {
+                    def it = record.entrySet().iterator()
+                    if (it.hasNext()) {
+                        def e = it.next()
+                        firstKey = e.key?.toString() ?: ''
+                        firstValue = (e.value != null ? e.value.toString() : '')
+                    }
+                } else if (record instanceof List && record.size() > 0) {
+                    firstKey = '0'
+                    firstValue = record[0]?.toString() ?: ''
                 }
-            } else if (record instanceof List && record.size() > 0) {
-                firstKey = '0'
-                firstValue = record[0]?.toString() ?: ''
+            } catch (e) {
+                firstKey = ''
+                firstValue = ''
             }
-        } catch (e) {
-            firstKey = ''
-            firstValue = ''
+
+            try {
+                def req = new ODataRequestBody()
+                req.url = Constants.ENTITY_ENDPOINT
+                req.payload = JsonOutput.toJson(record)
+                req.requestProperty = ['Content-Type': 'application/json']
+
+                def res = conn.post(req)
+                if (res?.status == 1) {
+                    // collect minimal success info (avoid logging every success)
+                    successItems << [index: i + 1, firstField: firstKey, firstValue: firstValue]
+                    results << [index: i + 1, status: 'OK']
+                } else {
+                    errorItems << [index: i + 1, firstField: firstKey, firstValue: firstValue, message: res?.message, payload: res?.payload]
+                    results << [index: i + 1, status: 'ERROR', message: res?.message]
+                }
+            } catch (Exception e) {
+                errorItems << [index: i + 1, ItemCode: record?.ItemCode ?: '', message: e.message]
+                results << [index: i + 1, status: 'ERROR', message: e.message]
+            }
         }
 
-        try {
-            def req = new ODataRequestBody()
-            req.url = Constants.ENTITY_ENDPOINT
-            req.payload = JsonOutput.toJson(record)
-            req.requestProperty = ['Content-Type': 'application/json']
-
-            def res = conn.post(req)
-            if (res?.status == 1) {
-                // collect minimal success info (avoid logging every success)
-                successItems << [index: i + 1, firstField: firstKey, firstValue: firstValue]
-                results << [index: i + 1, status: 'OK']
-            } else {
-                errorItems << [index: i + 1, firstField: firstKey, firstValue: firstValue, message: res?.message, payload: res?.payload]
-                results << [index: i + 1, status: 'ERROR', message: res?.message]
-            }
-        } catch (Exception e) {
-            errorItems << [index: i + 1, ItemCode: record?.ItemCode ?: '', message: e.message]
-            results << [index: i + 1, status: 'ERROR', message: e.message]
+        // Log aggregated success summary (do not log every successful item)
+        if (successItems.size() > 0) {
+            def successSummary = [
+                endpoint: Constants.ENTITY_ENDPOINT,
+                totalItems: recordList.size(),
+                successfulCount: successItems.size(),
+                sampleFirstValues: successItems.collect { it.firstValue }[0..Math.max(0, Math.min(successItems.size()-1, 19))]
+            ]
+            def prettySuccess = JsonOutput.prettyPrint(JsonOutput.toJson(successSummary))
+            logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_SUCCESS", title: Constants.LOG_RECID, status: "OK", inputPayload: "Processed ${recordList.size()} items", outputPayload: prettySuccess))
         }
-    }
 
-    // Log aggregated success summary (do not log every successful item)
-    if (successItems.size() > 0) {
-        def successSummary = [
-            endpoint: Constants.ENTITY_ENDPOINT,
-            totalItems: recordList.size(),
-            successfulCount: successItems.size(),
-            sampleFirstValues: successItems.collect { it.firstValue }[0..Math.max(0, Math.min(successItems.size()-1, 19))]
-        ]
-        def prettySuccess = JsonOutput.prettyPrint(JsonOutput.toJson(successSummary))
-        logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_SUCCESS", title: Constants.LOG_RECID, status: "OK", inputPayload: "Processed ${recordList.size()} items", outputPayload: prettySuccess))
+        // Log aggregated errors with details (prettified)
+        if (errorItems.size() > 0) {
+            def errorReport = [endpoint: Constants.ENTITY_ENDPOINT, failedCount: errorItems.size(), details: errorItems]
+            def prettyError = JsonOutput.prettyPrint(JsonOutput.toJson(errorReport))
+            logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_ERRORS", title: Constants.LOG_RECID, status: "ERROR", inputPayload: "Processed ${recordList.size()} items", outputPayload: prettyError))
+        }
+    } catch (Exception ex) {
+        logger.logBoth(new LogRequest(title: Constants.LOG_RECID, stepName: "${Constants.STEP_NAME}_UNHANDLED_ERR", status: "ERROR", inputPayload: payload, outputPayload: "Exception: ${e.message}\nStacktrace: ${e.stackTrace.join('\n')}"))
     }
-
-    // Log aggregated errors with details (prettified)
-    if (errorItems.size() > 0) {
-        def errorReport = [endpoint: Constants.ENTITY_ENDPOINT, failedCount: errorItems.size(), details: errorItems]
-        def prettyError = JsonOutput.prettyPrint(JsonOutput.toJson(errorReport))
-        logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_ERRORS", title: Constants.LOG_RECID, status: "ERROR", inputPayload: "Processed ${recordList.size()} items", outputPayload: prettyError))
-    }
-
-    // Return pretty results as message body
-    message.setBody(JsonOutput.prettyPrint(JsonOutput.toJson(results)))
     return message
 }
 
