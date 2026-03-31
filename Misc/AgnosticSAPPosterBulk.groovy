@@ -104,7 +104,8 @@ def Message processData(Message message) {
      * check if the endpoint already has those items that we want to POST (POST is not idempotent).
      * Sometimes, we want to PATCH it instead. 
     */
-    recordList.each { record ->
+    for (int i = 0; i < recordList.size(); i++) {
+        def record = recordList[i]
         batchBody.append(sapRequestBatchBodyBuilder(record, changesetId, "POST"))
     }
 
