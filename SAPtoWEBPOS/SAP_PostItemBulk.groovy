@@ -105,6 +105,7 @@ def Message processData(Message message) {
      * Sometimes, we want to PATCH it instead. 
     */
     for (int i = 0; i < recordList.size(); i++) {
+        def record = recordList[i]
         def itemCode = (record?.ItemCode?.toString() ?: '').trim()
         if (!itemCode) {
             // missing ItemCode -> skip
