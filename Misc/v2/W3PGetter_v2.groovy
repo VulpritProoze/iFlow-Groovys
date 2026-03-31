@@ -1,6 +1,9 @@
 /**
  * W3PGetter_v2.groovy
- * 
+ *
+ * Only gets one page every iFlow process, but queries the next subsequent page,
+ * on every subsequent process. 
+ *
  * Dependencies:
  * - Misc/LoggerService.groovy (Standalone implementation appended below)
  * - Misc/SOAPConnection.groovy (Integrated logic)
@@ -67,18 +70,28 @@ def Message processData(Message message) {
     try {
         def credsMap = extractW3PCredentials()
         if (credsMap.status != 1) {
-            logger.logBoth(new LogRequest(title: Constants.LOG_RECID, stepName: Constants.STEP_NAME, status: "ERROR", inputPayload: payload, outputPayload: credsMap.message))
+            logger.logBoth(new LogRequest(title: Constants.LOG_RECID, stepName: Constants.STEP_NAME, status: "ERROR", inputPayload: '', outputPayload: credsMap.message))
             return message
         }
 
         def soapConn = new HTTPSOAPConnection(credsMap.baseUrl).setId(credsMap.id).setKey(credsMap.key)
+        def flastkeyFromProp = message.getProperty(Constants.LAST_KEY_PROP_NAME) ?: ''
 
+        def request = new SOAPRequestBody(action: Constants.ACTION)
+        request.filters = (Constants.FILTERS instanceof Map) ? new HashMap(Constants.FILTERS) : [:] // using mutable copy of Constants
+        request.filters['flast_key'] = flastkeyFromProp
 
+        def pagRes = soapConn.post(request)
+        if (pagRes.status != 1) {
+            logger.logBoth(new LogRequest(title: Constants.LOG_RECID, stepName: "${Constants.STEP_NAME}_ERROR", status: "ERROR", inputPayload: '', outputPayload: pagRes.message ?: "SOAP call failed"))
+            return message
+        }
+        def responseXml = pagRes.payload?.toString() ?: ""
 
 
         message.setBody(responseXml)
     } catch (Exception e) {
-        logger.logBoth(new LogRequest(title: Constants.LOG_RECID, stepName: Constants.STEP_NAME, status: "ERROR", inputPayload: payload, outputPayload: "Exception: ${e.message}\nStacktrace: ${e.stackTrace.take(5).join('\n')}"))
+        logger.logBoth(new LogRequest(title: Constants.LOG_RECID, stepName: Constants.STEP_NAME, status: "ERROR", inputPayload: '', outputPayload: "Exception: ${e.message}\nStacktrace: ${e.stackTrace.take(5).join('\n')}"))
     }
     
     return message
