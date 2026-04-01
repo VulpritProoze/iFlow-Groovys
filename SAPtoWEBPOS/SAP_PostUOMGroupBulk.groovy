@@ -63,13 +63,13 @@ def Message processData(Message message) {
 
     def _p = payload?.toString()?.trim()
     if (!_p || _p == '[]' || _p == 'null' || _p == '') {
-        logger.logBoth(new LogRequest(stepName: Constants.STEP_NAME, title: Constants.LOG_RECID, status: "OK", inputPayload: payload, outputPayload: "Mapping payload is empty. Skipping POST Requests"))
+        logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_SKIP", title: Constants.LOG_RECID, status: "OK", inputPayload: payload, outputPayload: "Mapping payload is empty. Skipping POST Requests"))
         return message
     }
 
     def sapCreds = extractSLCredentials(message)
     if (sapCreds.status != 1) {
-        logger.logInternal(new LogRequest(stepName: "CREDENTIAL_FAILURE", title: Constants.LOG_RECID, status: "ERROR", inputPayload: payload, outputPayload: sapCreds.message))
+        logger.logInternal(new LogRequest(stepName: "${Constants.STEP_NAME}_CREDENTIAL_FAILURE", title: Constants.LOG_RECID, status: "ERROR", inputPayload: payload, outputPayload: sapCreds.message))
         message.setBody(JsonOutput.toJson([]))
         return message
     }
