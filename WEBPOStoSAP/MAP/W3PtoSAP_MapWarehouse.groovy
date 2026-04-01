@@ -72,12 +72,11 @@ def Message processData(Message message) {
         def outList = []
         for (def rec in records) {
             def recMap = [
-                "WarehouseCode": rec.fsiteid,
-                "WarehouseName": rec.fname,
+                "WarehouseCode": rec.fsiteid.text() ?: "",
+                "WarehouseName": rec.fname.text() ?: "",
             ]
             
-            recMap.Inactive = rec.factive_flag == "0" ? "tYES" : "tNO"
-
+            recMap.Inactive = (rec.factive_flag?.text() ?: '1') == "0" ? "tYES" : "tNO"
             outList << recMap
         }
 
