@@ -34,7 +34,7 @@ class Constants {
     static final String STEP_NAME = "W3PtoSAP_[StepName]"
 
     // For FDone checking
-    static final String LAST_BATCHID_PROP_NAME = "[ProjectName]_[Action]_[flast_batchid]"
+    static final String LAST_BATCHID_PROP_NAME = "[Project]_[Action]_flast_batchid"
 
     // Logging Constant/s
     static final String LOG_RECID = "W3P"
