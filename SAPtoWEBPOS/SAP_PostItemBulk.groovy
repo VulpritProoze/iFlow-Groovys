@@ -121,7 +121,7 @@ def Message processData(Message message) {
                     results << [index: i + 1, status: 'ERROR', message: res?.message]
                 }
             } catch (Exception e) {
-                errorItems << [index: i + 1, ItemCode: record?.ItemCode ?: '', message: e.message]
+                errorItems << [index: i + 1, firstField: firstKey, firstValue: firstValue, message: e.message]
                 results << [index: i + 1, status: 'ERROR', message: e.message]
             }
         }
