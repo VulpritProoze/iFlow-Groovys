@@ -55,7 +55,7 @@ def Message processData(Message message) {
 
     // End process if /GET returns last page with no records
     if (isFdoneOne(payload)) {
-        logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_FDONE", title: Constants.LOG_RECID, status: "OK", inputPayload: payload, outputPayload: "fdone == 1 - skipping mapping"))
+        logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_SKIP", title: Constants.LOG_RECID, status: "OK", inputPayload: payload, outputPayload: "GET queried all pages. No records left to map"))
         message.setBody(JsonOutput.toJson([]))
         return message
     }
@@ -130,29 +130,39 @@ def isFdoneOne(String payload) {
         return false
     }
 
-    try {
-        def newSafeSlurper = {
-            def sp = new XmlSlurper()
+    def newSafeSlurper = {
+        def sp = new XmlSlurper()
+        try {
             sp.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true)
             sp.setFeature("http://xml.org/sax/features/external-general-entities", false)
             sp.setFeature("http://xml.org/sax/features/external-parameter-entities", false)
-            return sp
+        } catch (e) {
+            // ignore if not supported
         }
+        return sp
+    }
 
-        def sanitizeXml = { String s ->
-            if (!s) return ''
-            s.replaceAll('&lt;', '<')
-             .replaceAll('&gt;', '>')
-             .replaceAll('&quot;', '"')
-             .replaceAll('&apos;', "'")
-             .replaceAll('&amp;', '&')
-             .replaceAll(/&(?!([A-Za-z0-9]+|#\d+|#x[0-9A-Fa-f]+);)/, '&amp;')
-        }
+    def sanitizeXml = { String s ->
+        if (!s) return ''
+        s.replaceAll('&lt;', '<')
+         .replaceAll('&gt;', '>')
+         .replaceAll('&quot;', '"')
+         .replaceAll('&apos;', "'")
+         .replaceAll('&amp;', '&')
+         .replaceAll(/&(?!([A-Za-z0-9]+|#\d+|#x[0-9A-Fa-f]+);)/, '&amp;')
+    }
 
+    try {
         def envelope = newSafeSlurper().parseText(trimmed)
 
         def fdoneFound = envelope.'**'.find { it.name() == 'fdone' }?.text()?.trim() == '1'
-        def hasRecords = (envelope.data?.record?.size() ?: 0) > 0
+
+        def hasRecords = false
+        try {
+            hasRecords = envelope.'**'.findAll { it.name() == 'record' }?.size() > 0
+        } catch (e) {
+            hasRecords = false
+        }
 
         def innerXml = envelope.Body?.callResponse?.Result?.text()
                     ?: envelope.'**'.find { it.name() == 'Result' }?.text()
@@ -160,7 +170,13 @@ def isFdoneOne(String payload) {
         if (innerXml) {
             def innerRoot = newSafeSlurper().parseText(sanitizeXml(innerXml))
             if (!fdoneFound) fdoneFound = innerRoot.'**'.find { it.name() == 'fdone' }?.text()?.trim() == '1'
-            if (!hasRecords) hasRecords = (innerRoot.data?.record?.size() ?: 0) > 0
+            if (!hasRecords) {
+                try {
+                    hasRecords = innerRoot.'**'.findAll { it.name() == 'record' }?.size() > 0
+                } catch (e) {
+                    hasRecords = false
+                }
+            }
         }
 
         return fdoneFound && !hasRecords

@@ -1,6 +1,9 @@
 /**
  * W3P_GetWarehouse.groovy
- * 
+ *
+ * Only gets one page every iFlow process, but queries the next subsequent page,
+ * on every subsequent process. 
+ *
  * Dependencies:
  * - Misc/LoggerService.groovy (Standalone implementation appended below)
  * - Misc/SOAPConnection.groovy (Integrated logic)
@@ -29,11 +32,12 @@ import java.time.format.DateTimeFormatter
 import java.time.ZoneOffset
 
 
+
 class Constants {
     static final String STEP_NAME = "W3P_GetWarehouse"
     static final String ACTION = "GET_WAREHOUSE"
-    static final String W3P_CRED = "[W3P_CRED]"
-    static final String W3P_URL = "[W3P_URL]"
+    static final String W3P_CRED = "ITGWEPOSSAPINTEGRATION_W3P_CREDS"
+    static final String W3P_URL = "ITGWEPOSSAPINTEGRATION_WEBPOS_URL"
 
     // Default filter values for WebPOS SOAP requests.
     static final Map FILTERS = [:]
@@ -43,24 +47,14 @@ class Constants {
 
     // W3P keys store constants
     // We avoid conflicts with other global variables by ff. this standard
-    static final String NEW_BATCHID_PROP_NAME = "[ProjectName]_GetWarehouse_fnew_batchid"
-    static final String LAST_BATCHID_PROP_NAME = "[ProjectName]_GetWarehouse_flast_batchid"
-    static final String LAST_KEY_PROP_NAME = "[ProjectName]_GetWarehouse_flast_key"
-    static final String FDONE_PROP_NAME = "[ProjectName]_GetWarehouse_fdone"
+    static final String NEW_BATCHID_PROP_NAME = "ITGWEPOSSAPINTEGRATION3_GetWarehouse_fnew_batchid"
+    static final String LAST_BATCHID_PROP_NAME = "ITGWEPOSSAPINTEGRATION3_GetWarehouse_flast_batchid"
+    static final String LAST_KEY_PROP_NAME = "ITGWEPOSSAPINTEGRATION3_GetWarehouse_flast_key"
+    static final String FDONE_PROP_NAME = "ITGWEPOSSAPINTEGRATION3_GetWarehouse_fdone"
 }
 
 /**
- * Processes WebPOS endpoints by issuing GET requests and aggregating their responses.
- *
- * Behavior:
- * - Performs the initial GET and continues requesting subsequent pages until
- *   the W3P service indicates completion.
- * - Builds a consolidated XML containing all <record> elements collected from
- *   each page; only the final page's control keys are appended:
- *   `fnew_batchid`, `flast_batchid`, `flast_key`, `fdone`.
- * - The last 4 keys are also set to property to be stored in global variable store
- *   to be pulled again on next cycle to ensure the old cycle does not requery same
- *   response (NOT YET IMPLEMENTED).
+ * Processes WebPOS endpoints by issuing GET requests.
  *
  * @param message the incoming iFlow Message
  * @return the iFlow Message with the aggregated SOAP-wrapped XML set as body
@@ -72,54 +66,29 @@ def Message processData(Message message) {
     } catch (Exception e) {
         logger.logInternal(new LogRequest(stepName: "${Constants.STEP_NAME}_LOGGER_FAILURE", title: Constants.LOG_RECID, status: "ERROR", inputPayload: 'Nothing yet.', outputPayload: "LoggerService failed: ${e.message}"))
     }
-    
-    try {
-        logger.injectW3PCredentials()
-    } catch {
-        logger.logInternal(new LogRequest(stepName: "${Constants.STEP_NAME}_LOGGER_FAILURE", title: Constants.LOG_RECID, status: "ERROR", inputPayload: payload, outputPayload: "LoggerService failed: ${loggerStatus.message}"))
-    }
-    
-    def payload = ''
-    def reader = message.getBody(java.io.Reader)
-    if (reader != null) {
-        try {
-            payload = reader.getText() ?: ''
-        } finally {
-            try { reader.close() } catch (e) { /* ignore close errors */ }
-        }
-    } else {
-        payload = (message.getBody(java.lang.String) ?: '')
-    }
-    
-    // 1. Extract W3P Credentials from Secure Store
-    // Using the logic from SC_ExtractW3PCredentials.groovy to get Id, Key and BaseUrl
+
     try {
         def credsMap = extractW3PCredentials()
         if (credsMap.status != 1) {
-            logger.logBoth(new LogRequest(title: Constants.LOG_RECID, stepName: Constants.STEP_NAME, status: "ERROR", inputPayload: payload, outputPayload: credsMap.message))
+            logger.logBoth(new LogRequest(title: Constants.LOG_RECID, stepName: "${Constants.STEP_NAME}_CREDS_ERR", status: "ERROR", inputPayload: '', outputPayload: credsMap.message))
             return message
         }
 
-        // 2. Initialize the SOAP Connection
         def soapConn = new HTTPSOAPConnection(credsMap.baseUrl).setId(credsMap.id).setKey(credsMap.key)
+        def flastkeyFromProp = message.getProperty(Constants.LAST_KEY_PROP_NAME) ?: ''
 
-        // NEW STEP: read previously stored W3P keys from message properties (use empty string when missing)
-        def fnewFromProp = message.getProperty(Constants.NEW_BATCHID_PROP_NAME) ?: ''
-
-        // 3. Prepare the Request. Takes into account new updates from W3P
         def request = new SOAPRequestBody(action: Constants.ACTION)
         request.filters = (Constants.FILTERS instanceof Map) ? new HashMap(Constants.FILTERS) : [:] // using mutable copy of Constants
-        request.filters['flast_batchid'] = fnewFromProp
+        request.filters['flast_key'] = flastkeyFromProp
 
-        // 4. Execute paginated SOAP calls (initial post + subsequent pages)
-        def pagRes = soapConn.postAllPagination(request)
+        def pagRes = soapConn.post(request)
         if (pagRes.status != 1) {
-            logger.logBoth(new LogRequest(title: Constants.LOG_RECID, stepName: Constants.STEP_NAME, status: "ERROR", inputPayload: payload, outputPayload: pagRes.message ?: "SOAP call failed"))
+            logger.logBoth(new LogRequest(title: Constants.LOG_RECID, stepName: "${Constants.STEP_NAME}_ERR", status: "ERROR", inputPayload: '', outputPayload: pagRes.message ?: "SOAP call failed"))
             return message
         }
-        def responseXml = pagRes.payload?.toString() ?: ""
 
-        logger.logBoth(new LogRequest(title: Constants.LOG_RECID, stepName: Constants.STEP_NAME, status: "OK", inputPayload: payload, outputPayload: responseXml))
+        def responseXml = pagRes.payload?.toString() ?: ""
+        logger.logBoth(new LogRequest(title: Constants.LOG_RECID, stepName: "${Constants.STEP_NAME}_OK", status: "OK", inputPayload: '', outputPayload: responseXml))
 
         // Extract W3P fields (fnew_batchid, flast_batchid, flast_key, fdone)
         def extractRes = extractW3PTimestampAndBatch(responseXml)
@@ -131,16 +100,15 @@ def Message processData(Message message) {
                 message.setProperty(Constants.LAST_KEY_PROP_NAME, p.fkey ?: '')
                 message.setProperty(Constants.FDONE_PROP_NAME, p.fdone ?: '')
             } catch (e) {
-                logger.logBoth(new LogRequest(title: Constants.LOG_RECID, stepName: Constants.STEP_NAME, status: "ERROR", inputPayload: payload, outputPayload: "Failed setting W3P properties: ${e.message}"))
+                logger.logBoth(new LogRequest(title: Constants.LOG_RECID, stepName: "${Constants.STEP_NAME}_ERR", status: "ERROR", inputPayload: '', outputPayload: "Failed setting W3P properties: ${e.message}"))
             }
         } else {
-            logger.logBoth(new LogRequest(title: Constants.LOG_RECID, stepName: Constants.STEP_NAME, status: "ERROR", inputPayload: payload, outputPayload: "extractW3PTimestampAndBatch failed: ${extractRes?.message}"))
+            logger.logBoth(new LogRequest(title: Constants.LOG_RECID, stepName: "${Constants.STEP_NAME}_ERR", status: "ERROR", inputPayload: '', outputPayload: "extractW3PTimestampAndBatch failed: ${extractRes?.message}"))
         }
 
         message.setBody(responseXml)
-
     } catch (Exception e) {
-        logger.logBoth(new LogRequest(title: Constants.LOG_RECID, stepName: Constants.STEP_NAME, status: "ERROR", inputPayload: payload, outputPayload: "Exception: ${e.message}\nStacktrace: ${e.stackTrace.take(5).join('\n')}"))
+        logger.logBoth(new LogRequest(title: Constants.LOG_RECID, stepName: "${Constants.STEP_NAME}_UNHANDLED_ERR", status: "ERROR", inputPayload: payload, outputPayload: "Exception: ${e.message}\nStacktrace: ${e.stackTrace.join('\n')}"))
     }
     
     return message
@@ -253,207 +221,6 @@ class HTTPSOAPConnection {
             }
         } catch (Exception e) {
             return [status: -1, message: "SOAP exception: ${e.message}"]
-        }
-    }
-
-    /**
-     * Note: This endpoint is only for 'GET_' endpoints in W3P'.
-     * Posts the initial request, then repeatedly posts with the `flast_key` filter set to
-     * the last seen `flast_key` value. Collects all `<record>` nodes from each page and
-     * returns a single well-formed XML payload containing all records and the four
-     * control keys (`fnew_batchid`, `flast_batchid`, `flast_key`, `fdone`) taken from
-     * the last page fetched.
-     *
-     * Warning: This only captures the last page's 4 keys and return code.
-     */
-    public def postAllPagination(SOAPRequestBody baseRequest) {
-        try {
-            if (!baseRequest) {
-                return [status: 0, message: "postAllPagination: baseRequest is required"]
-            }
-            if (!baseRequest.action || !(baseRequest.action instanceof String) || !baseRequest.action.contains('GET_')) {
-                return [status: 0, message: "postAllPagination: baseRequest.action must contain 'GET_' (only GET_ endpoints supported)"]
-            }
-            // Prepare a mutable copy of the request so we can append pagination filters
-            SOAPRequestBody request = new SOAPRequestBody()
-            request.action = baseRequest.action
-            request.record = baseRequest.record
-            request.customEnvelope = baseRequest.customEnvelope
-            request.requestProperty = baseRequest.requestProperty ?: ['Content-Type': 'application/xml']
-            request.filters = baseRequest.filters ? new HashMap(baseRequest.filters) : [:]
-
-            // Helper: parse XML using a secure SAX parser (best-effort to disable external entities)
-            def parseSafe = { String xmlStr ->
-                def spf = javax.xml.parsers.SAXParserFactory.newInstance()
-                try {
-                    spf.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true)
-                    spf.setFeature("http://xml.org/sax/features/external-general-entities", false)
-                    spf.setFeature("http://xml.org/sax/features/external-parameter-entities", false)
-                } catch (Exception se) {
-                    // feature not supported - continue with best-effort parser
-                }
-                spf.setXIncludeAware(false)
-                spf.setNamespaceAware(false)
-                def parser = spf.newSAXParser()
-                def reader = parser.getXMLReader()
-                return new XmlSlurper(reader).parseText(xmlStr)
-            }
-
-            List<String> allRecordFragments = []
-            List<String> pageResults = []
-            String finalFnewBatchid = ""
-            String finalFlastBatchid = ""
-            String finalFlastKey = ""
-            String finalFdone = "0"
-            String finalReturnCode = "0"
-
-            while (true) {
-                def resp = this.post(request)
-                if (resp.status != 1) {
-                    return [status: -1, message: "postAllPagination: POST failed: ${resp.message}", lastResponse: resp]
-                }
-
-                def payload = resp.payload ?: ""
-                if (!payload) {
-                    return [status: -1, message: "postAllPagination: empty payload"]
-                }
-
-                // SOAP wrapper -> extract Result element text (which itself contains escaped XML)
-                def soapParsed = parseSafe(payload)
-                def resultNode = soapParsed.'**'.find { it.name() == 'Result' }
-                def resultText = resultNode?.text()
-                if (!resultText) {
-                    return [status: -1, message: "postAllPagination: Result element not found in SOAP response", payload: payload]
-                }
-
-                pageResults << resultText
-
-                // parse inner page XML
-                def pageParsed = parseSafe(resultText)
-
-                // extract pagination control keys
-                finalFnewBatchid = pageParsed.data.fnew_batchid?.text() ?: finalFnewBatchid
-                finalFlastBatchid = pageParsed.data.flast_batchid?.text() ?: finalFlastBatchid
-                finalFlastKey = pageParsed.data.flast_key?.text() ?: finalFlastKey
-                finalFdone = pageParsed.data.fdone?.text() ?: finalFdone
-
-                // extract return_code if present anywhere under the page (may be sibling of <data>)
-                def rcNode = pageParsed.'**'.find { it.name() == 'return_code' }
-                finalReturnCode = rcNode?.text() ?: finalReturnCode
-
-                // collect records - robust multi-strategy extraction to avoid truncation
-                def collectPageRecordFragments = { String pageText, def parsedPage ->
-                    def fragments = []
-
-                    // 1) Try serializing parsed <record> nodes (best when parser read correctly)
-                    try {
-                        parsedPage.data.record.each { rec ->
-                            String recXml = XmlUtil.serialize(rec)
-                            recXml = recXml.replaceFirst(/<\?xml.*?\?>\s*/, '')
-                            if (recXml?.trim()) fragments << recXml
-                        }
-                    } catch (e) { /* ignore */ }
-                    if (fragments) return fragments
-
-                    // 2) Try direct regex on pageText
-                    try {
-                        def m = (pageText =~ /(?s)<record\b[^>]*?(?:\/>|>.*?<\/record>)/)
-                        if (m && m.size() > 0) {
-                            m.each { mm -> if (mm[0]?.trim()) fragments << mm[0] }
-                        }
-                    } catch (e) { /* ignore */ }
-                    if (fragments) return fragments
-
-                    // 3) Iteratively unescape and regex (handles double-escaped content)
-                    try {
-                        def unescaped = pageText ?: ''
-                        while (true) {
-                            def next = unescaped.replaceAll('&lt;', '<').replaceAll('&gt;', '>').replaceAll('&quot;', '"').replaceAll('&apos;', "'").replaceAll('&amp;', '&')
-                            if (next == unescaped) break
-                            unescaped = next
-                        }
-                        def m2 = (unescaped =~ /(?s)<record\b[^>]*?(?:\/>|>.*?<\/record>)/)
-                        if (m2 && m2.size() > 0) {
-                            m2.each { mm -> if (mm[0]?.trim()) fragments << mm[0] }
-                        }
-                    } catch (e) { /* ignore */ }
-                    if (fragments) return fragments
-
-                    // 4) Fallback: serialize entire <data> then extract
-                    try {
-                        String dataXml = XmlUtil.serialize(parsedPage.data)
-                        dataXml = dataXml.replaceFirst(/<\?xml.*?\?>\s*/, '')
-                        String inner = dataXml.replaceFirst(/^\s*<data[^>]*>/, '').replaceFirst(/<\/data>\s*$/, '')
-                        def m3 = (inner =~ /(?s)<record\b[^>]*?(?:\/>|>.*?<\/record>)/)
-                        if (m3 && m3.size() > 0) { m3.each { mm -> if (mm[0]?.trim()) fragments << mm[0] } }
-                    } catch (e) { /* ignore */ }
-
-                    return fragments
-                }
-
-                def pageFrags = collectPageRecordFragments(resultText, pageParsed)
-                if (pageFrags && pageFrags.size() > 0) {
-                    pageFrags.each { f -> allRecordFragments << f }
-                }
-
-                // stop condition
-                if (finalFdone == '1' || finalFdone?.toLowerCase() == 'true') {
-                    break
-                }
-
-                // prepare next iteration: set flast_key to last seen flast_key
-                request.filters = request.filters ?: [:]
-                request.filters['flast_key'] = finalFlastKey
-            }
-
-            // Build finalResponse: if no records were collected, return concatenated page results as fallback
-            // Use manual concatenation to avoid MarkupBuilder edge-cases that may truncate
-            // or mangle raw fragments when they contain unexpected constructs.
-            String finalResponse
-            if (allRecordFragments.size() == 0) {
-                finalResponse = pageResults.join('\n')
-            } else {
-                def sb = new StringBuilder()
-                sb.append("""<?xml version='1.0' encoding='utf-8'?>\n<root>\n  <return_code>${finalReturnCode}</return_code>\n  <data>\n""")
-                sb.append("    <fnew_batchid>${finalFnewBatchid}</fnew_batchid>\n")
-                sb.append("    <flast_batchid>${finalFlastBatchid}</flast_batchid>\n")
-                sb.append("    <flast_key>${finalFlastKey}</flast_key>\n")
-                sb.append("    <fdone>${finalFdone}</fdone>\n")
-                allRecordFragments.each { r ->
-                    try {
-                        String rec = r.replaceFirst(/^\s*<\?xml.*?\?>\s*/, '')
-                        sb.append(rec)
-                        if (!rec.endsWith('\n')) sb.append('\n')
-                    } catch (e) {
-                        sb.append(r)
-                        if (!r.endsWith('\n')) sb.append('\n')
-                    }
-                }
-                sb.append('  </data>\n</root>\n')
-                finalResponse = sb.toString()
-            }
-
-            // Escape the inner XML and wrap it in the SOAP envelope/Result structure
-            def escapeXmlForResult = { String s ->
-                if (s == null) return ''
-                // escape ampersand first
-                s = s.replace('&', '&amp;')
-                s = s.replace('<', '&lt;')
-                s = s.replace('>', '&gt;')
-                return s
-            }
-
-            String escapedInner = escapeXmlForResult(finalResponse)
-
-            String soapWrapped = '<?xml version="1.0" encoding="UTF-8"?>' +
-                '<SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/" xmlns:ns1="urn:localhost-main" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:SOAP-ENC="http://schemas.xmlsoap.org/soap/encoding/" SOAP-ENV:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">' +
-                '<SOAP-ENV:Body><ns1:callResponse><Result xsi:type="xsd:string">' +
-                escapedInner +
-                '</Result></ns1:callResponse></SOAP-ENV:Body></SOAP-ENV:Envelope>'
-
-            return [status: 1, message: 'Success', payload: soapWrapped]
-        } catch (Exception e) {
-            return [status: -1, message: "postAllPagination error: ${e.message}"]
         }
     }
 
