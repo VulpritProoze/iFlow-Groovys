@@ -166,7 +166,7 @@ def Message processData(Message message) {
                         if (!uomAbs) {
                             def req2 = new ODataRequestBody(); req2.url = "/UnitOfMeasurements?\$filter=Code%20eq%20'${java.net.URLEncoder.encode(sapItem.ItemCode?.toString() ?: itemCode, 'UTF-8')}'"
                             def r2 = odata.get(req2)
-                            if (r2 instanceof Map && r2.status == 1) logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_SAP_QUERY_UOM_OK", title: Constants.LOG_RECID, status: "OK", inputPayload: req2.url, outputPayload: r2.payload))
+                            if (r2 instanceof Map && r2.status == 1) logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_UOM_RESOLVE", title: Constants.LOG_RECID, status: "OK", inputPayload: req2.url, outputPayload: r2.payload))
                             def uom = extractFirst(r2, req2.url)
                             if (uom == null) {
                                 logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_UOM_NULL", title: Constants.LOG_RECID, status: "OK", inputPayload: req2.url, outputPayload: "message: UoM lookup returned null \n\nresponse: ${r2}"))
