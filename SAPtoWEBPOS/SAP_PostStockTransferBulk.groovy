@@ -109,10 +109,15 @@ def Message processData(Message message) {
             try {
                 def fKey = record?.AuthorizationCode ?: ''
                 def getRes = conn.get(new ODataRequestBody(url: "${Constants.ENTITY_ENDPOINT}?\$filter=AuthorizationCode%20eq%20'${fKey}'"))
-                if (getRes?.status != 1 || getRes?.payload.size() > 0) {
+                if (getRes?.status != 1) {
                     logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_ERR", title: Constants.LOG_RECID, status: "ERROR", inputPayload: "fKey: ${fKey}", outputPayload: getRes?.message ?: "Unknown error"))
                     return message
                 }
+                if (getRes?.payload.size() > 0) {
+                    logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_STOCKTRANSFER_RESOLVE", title: Constants.LOG_RECID, status: "OK", inputPayload: "fKey: ${fKey}", outputPayload: "This stock transfer already exists. Cannot POST this item"))
+                    return message
+                }
+                
                 logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_STOCKTRANSFER_RESOLVE", title: Constants.LOG_RECID, status: "OK", inputPayload: "fKey: ${fKey}", outputPayload: "There is no stock transfer of such AuthorizationCode / FKey. Continuing query \n\nPayload: ${getRes?.payload ?: 'Successful query.'}" ))
 
                 def req = new ODataRequestBody()
