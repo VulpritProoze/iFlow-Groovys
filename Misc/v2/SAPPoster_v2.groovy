@@ -4,10 +4,10 @@
  * Copy of AgnosticSAPPosterBulkIndiv
  * 
  * Dependencies:
- * - Misc/ExtractSLCredentials.groovy (Helper methods appended/integrated)
- * - Misc/ODataConnection.groovy (Integrated logic)
- * - Misc/LoggerService.groovy (Standalone implementation appended below)
- * - Misc/FormatBatchResponse.groovy (Integrated logic)
+ * - Misc/ExtractSLCredentials.groovy
+ * - Misc/ODataConnection.groovy
+ * - Misc/LoggerService.groovy
+ * - Misc/FormatBatchResponse.groovy
  */
 import java.net.URL
 import java.net.HttpURLConnection

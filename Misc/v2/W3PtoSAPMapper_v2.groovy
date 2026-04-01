@@ -5,8 +5,8 @@
  * - IsFDoneOne method now also checks for empty messagebody payload
  * 
  * Dependencies:
- * - Misc/Mapper.groovy (Logic refactored and appended below)
- * - Misc/LoggerService.groovy (Logic refactored and appended below)
+ * - Misc/Mapper.groovy
+ * - Misc/LoggerService.groovy
  * - Misc/ODataConnection.groovy
  * - Misc/SOAPConnection.groovy
  */
