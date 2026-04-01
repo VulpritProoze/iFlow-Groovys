@@ -110,16 +110,16 @@ def Message processData(Message message) {
                 def fKey = record?.AuthorizationCode ?: ''
                 def getRes = conn.get(new ODataRequestBody(url: "${Constants.ENTITY_ENDPOINT}?\$filter=AuthorizationCode%20eq%20'${fKey}'"))
                 if (getRes?.status != 1) {
-                    logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_ERR", title: Constants.LOG_RECID, status: "ERROR", inputPayload: "fKey: ${fKey}", outputPayload: getRes?.message ?: "Unknown error"))
+                    errorItems << [index: i + 1, firstField: firstKey, firstValue: firstValue, message: getRes?.message ?: "Unknown error", payload: getRes?.payload]
+                    results << [index: i + 1, status: 'ERROR', message: getRes?.message ?: 'Unknown error']
                     continue
                 }
-                if (getRes?.payload.size() > 0) {
-                    logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_STOCKTRANSFER_RESOLVE", title: Constants.LOG_RECID, status: "ERROR", inputPayload: "fKey: ${fKey}", outputPayload: "This stock transfer already exists. Cannot POST this item \n\nPayload: ${getRes.payload}"))
+                if (getRes?.payload?.size() > 0) {
+                    errorItems << [index: i + 1, firstField: firstKey, firstValue: firstValue, message: "This stock transfer already exists. Cannot POST this item", payload: getRes?.payload]
+                    results << [index: i + 1, status: 'ERROR', message: 'Already exists']
                     continue
                 }
                 
-                logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_STOCKTRANSFER_RESOLVE", title: Constants.LOG_RECID, status: "OK", inputPayload: "fKey: ${fKey}", outputPayload: "There is no stock transfer of such AuthorizationCode / FKey. Continuing query \n\nPayload: ${getRes?.payload ?: 'Successful query.'}" ))
-
                 def req = new ODataRequestBody()
                 req.url = Constants.ENTITY_ENDPOINT
                 req.payload = JsonOutput.toJson(record)
