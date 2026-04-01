@@ -164,16 +164,17 @@ def isFdoneOne(String payload) {
         def sl = newSafeSlurper()
         def envelope = sl.parseText(payload)
 
+        boolean fdoneFound = false
+        boolean hasRecords = false
+
         // Look for direct <fdone> in envelope
         def direct = envelope.'**'.find { it.name() == 'fdone' }
         if (direct && direct.text()?.trim() == '1') {
-            // Previously we validated flast_batchid; that check is removed — any fdone==1 means done
-            return true
+            fdoneFound = true
         }
 
         // If there's an inner <Result> string, unescape and parse it then search for fdone
         def innerXml = envelope.Body?.callResponse?.Result?.text() ?: envelope.'**'.find { it.name() == 'Result' }?.text()
-        def hasRecords = false
         if (innerXml) {
             // Ensure we don't pass stray unescaped '&' to the XML parser which
             // throws "The entity name must immediately follow the '&'...".
@@ -187,7 +188,7 @@ def isFdoneOne(String payload) {
                 def innerRoot = newSafeSlurper().parseText(innerUnescaped)
                 def innerFdone = innerRoot.'**'.find { it.name() == 'fdone' }
                 if (innerFdone && innerFdone.text()?.trim() == '1') {
-                    return true
+                    fdoneFound = true
                 }
 
                 // Check for <record> nodes inside inner content
@@ -202,8 +203,8 @@ def isFdoneOne(String payload) {
             try { hasRecords = (envelope.data?.record?.size() ?: 0) > 0 } catch (e) { hasRecords = false }
         }
 
-        // New rule: if there are no <record> items found in payload, treat as done/skip
-        if (!hasRecords) {
+        // Only treat as done when fdone==1 AND there are no record items
+        if (fdoneFound && !hasRecords) {
             return true
         }
     } catch (e) {
