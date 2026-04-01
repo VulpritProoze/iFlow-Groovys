@@ -1,6 +1,9 @@
 /**
  * W3P_GetProduct.groovy
  * 
+ * Only gets one page every iFlow process, but queries the next subsequent page,
+ * on every subsequent process.
+ *
  * Dependencies:
  * - Misc/LoggerService.groovy (Standalone implementation appended below)
  * - Misc/SOAPConnection.groovy (Integrated logic)
@@ -57,11 +60,7 @@ class Constants {
  */
 def Message processData(Message message) {
     def logger = new LoggerService(messageLogFactory, message)
-    try {
-        logger.injectW3PCredentials()
-    } catch (Exception e) {
-        logger.logInternal(new LogRequest(stepName: "${Constants.STEP_NAME}_LOGGER_FAILURE", title: Constants.LOG_RECID, status: "ERROR", inputPayload: 'Nothing yet.', outputPayload: "LoggerService failed: ${e.message}"))
-    }
+    try { logger.injectW3PCredentials() } catch (Exception e) { logger.logInternal(new LogRequest(stepName: "${Constants.STEP_NAME}_LOGGER_FAILURE", title: Constants.LOG_RECID, status: "ERROR", inputPayload: 'Nothing yet.', outputPayload: "LoggerService failed: ${e.message}")) }
 
     try {
         def credsMap = extractW3PCredentials()
@@ -104,7 +103,7 @@ def Message processData(Message message) {
 
         message.setBody(responseXml)
     } catch (Exception e) {
-        logger.logBoth(new LogRequest(title: Constants.LOG_RECID, stepName: "${Constants.STEP_NAME}_UNHANDLED_ERR", status: "ERROR", inputPayload: '', outputPayload: "Exception: ${e.message}\nStacktrace: ${e.stackTrace.take(5).join('\n')}"))
+        logger.logBoth(new LogRequest(title: Constants.LOG_RECID, stepName: "${Constants.STEP_NAME}_UNHANDLED_ERR", status: "ERROR", inputPayload: payload, outputPayload: "Exception: ${e.message}\nStacktrace: ${e.stackTrace.join('\n')}"))
     }
     
     return message

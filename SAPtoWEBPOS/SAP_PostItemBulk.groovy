@@ -1,6 +1,8 @@
 /**
  * SAP_PostItemBulk.groovy
  * 
+ * Copy of AgnosticSAPPosterBulkIndiv
+ *
  * Dependencies:
  * - Misc/ExtractSLCredentials.groovy (Helper methods appended/integrated)
  * - Misc/ODataConnection.groovy (Integrated logic)
@@ -25,15 +27,15 @@ import com.sap.it.api.ITApiFactory
 import com.sap.it.api.securestore.SecureStoreService
 
 class Constants {
-    static final String STEP_NAME = "[StepName]"
-    static final String SESSION_VAR_PROP_NAME = "[B1SESSION]"
-    static final String BASE_URL_PROP_NAME = "[SL_BaseURL]"
+    static final String STEP_NAME = "SAP_PostItemBulk"
+    static final String SESSION_VAR_PROP_NAME = "ITGWEPOSSAPINTEGRATION3_SL_Session"
+    static final String BASE_URL_PROP_NAME = "ITGWEPOSSAPINTEGRATION3_SL_BaseUrl"
     /** The relative OData endpoint for the entity (e.g., /Warehouses) */
     static final String ENTITY_ENDPOINT = "/Items"
 
     // For logging
-    static final String W3P_CRED = "[W3P_CRED]"
-    static final String W3P_URL = "[W3P_URL]"
+    static final String W3P_CRED = "ITGWEPOSSAPINTEGRATION_W3P_CREDS"
+    static final String W3P_URL = "ITGWEPOSSAPINTEGRATION_WEBPOS_URL"
 
     // Logging Constant/s
     static final String LOG_RECID = "W3P"
@@ -45,27 +47,19 @@ class Constants {
  */
 def Message processData(Message message) {
     def logger = new LoggerService(messageLogFactory, message)
-    try {
-        logger.injectW3PCredentials()
-    } catch (Exception e) {
-        logger.logInternal(new LogRequest(stepName: "${Constants.STEP_NAME}_LOGGER_FAILURE", title: Constants.LOG_RECID, status: "ERROR", inputPayload: 'Nothing yet.', outputPayload: "LoggerService failed: ${e.message}"))
-    }
-
+    try { logger.injectW3PCredentials() } catch (Exception e) { logger.logInternal(new LogRequest(stepName: "${Constants.STEP_NAME}_LOGGER_FAILURE", title: Constants.LOG_RECID, status: "ERROR", inputPayload: 'Nothing yet.', outputPayload: "LoggerService failed: ${e.message}")) }
+    
     def payload = ''
     def reader = message.getBody(java.io.Reader)
     if (reader != null) {
-        try {
-            payload = reader.getText() ?: ''
-        } finally {
-            try { reader.close() } catch (e) { /* ignore close errors */ }
-        }
+        try { payload = reader.getText() ?: '' } finally { try { reader.close() } catch (e) {} }
     } else {
         payload = (message.getBody(java.lang.String) ?: '')
     }
 
     def _p = payload?.toString()?.trim()
     if (!_p || _p == '[]' || _p == 'null' || _p == '') {
-        logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_EMPTY_PAYLOAD", title: Constants.LOG_RECID, status: "OK", inputPayload: payload, outputPayload: "Mapping payload is empty. Skipping POST Requests"))
+        logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_SKIP", title: Constants.LOG_RECID, status: "OK", inputPayload: payload, outputPayload: "Mapping payload is empty. Skipping POST Requests"))
         return message
     }
 
@@ -141,7 +135,7 @@ def Message processData(Message message) {
                 sampleFirstValues: successItems.collect { it.firstValue }[0..Math.max(0, Math.min(successItems.size()-1, 19))]
             ]
             def prettySuccess = JsonOutput.prettyPrint(JsonOutput.toJson(successSummary))
-            logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_SUCCESS", title: Constants.LOG_RECID, status: "OK", inputPayload: "Processed ${recordList.size()} items", outputPayload: prettySuccess))
+            logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_OK", title: Constants.LOG_RECID, status: "OK", inputPayload: "Processed ${recordList.size()} items", outputPayload: prettySuccess))
         }
 
         // Log aggregated errors with details (prettified)
