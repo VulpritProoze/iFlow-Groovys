@@ -68,7 +68,7 @@ def Message processData(Message message) {
 
     def _p = payload?.toString()?.trim()
     if (!_p || _p == '[]' || _p == 'null' || _p == '') {
-        logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_EMPTY_PAYLOAD", title: Constants.LOG_RECID, status: "OK", inputPayload: payload, outputPayload: "Mapping payload is empty. Skipping POST Requests"))
+        logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_SKIP", title: Constants.LOG_RECID, status: "OK", inputPayload: payload, outputPayload: "Mapping payload is empty. Skipping POST Requests"))
         return message
     }
 
@@ -144,7 +144,7 @@ def Message processData(Message message) {
                 sampleFirstValues: successItems.collect { it.firstValue }[0..Math.max(0, Math.min(successItems.size()-1, 19))]
             ]
             def prettySuccess = JsonOutput.prettyPrint(JsonOutput.toJson(successSummary))
-            logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_SUCCESS", title: Constants.LOG_RECID, status: "OK", inputPayload: "Processed ${recordList.size()} items", outputPayload: prettySuccess))
+            logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_OK", title: Constants.LOG_RECID, status: "OK", inputPayload: "Processed ${recordList.size()} items", outputPayload: prettySuccess))
         }
 
         // Log aggregated errors with details (prettified)
