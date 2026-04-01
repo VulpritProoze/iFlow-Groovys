@@ -43,27 +43,19 @@ class Constants {
 
 def Message processData(Message message) {
     def logger = new LoggerService(messageLogFactory, message)
-    try {
-        logger.injectW3PCredentials()
-    } catch (Exception e) {
-        logger.logInternal(new LogRequest(stepName: "${Constants.STEP_NAME}_LOGGER_FAILURE", title: Constants.LOG_RECID, status: "ERROR", inputPayload: 'Nothing yet.', outputPayload: "LoggerService failed: ${e.message}"))
-    }
+    try { logger.injectW3PCredentials() } catch (Exception e) { logger.logInternal(new LogRequest(stepName: "${Constants.STEP_NAME}_LOGGER_FAILURE", title: Constants.LOG_RECID, status: "ERROR", inputPayload: 'Nothing yet.', outputPayload: "LoggerService failed: ${e.message}")) }
     
     def payload = ''
     def reader = message.getBody(java.io.Reader)
     if (reader != null) {
-        try {
-            payload = reader.getText() ?: ''
-        } finally {
-            try { reader.close() } catch (e) { /* ignore close errors */ }
-        }
+        try { payload = reader.getText() ?: '' } finally { try { reader.close() } catch (e) {} }
     } else {
         payload = (message.getBody(java.lang.String) ?: '')
     }
 
     // End process if /GET returns last page with no records
     if (isFdoneOne(payload)) {
-        logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_FDONE", title: Constants.LOG_RECID, status: "OK", inputPayload: payload, outputPayload: "fdone == 1 - skipping mapping"))
+        logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_SKIP", title: Constants.LOG_RECID, status: "OK", inputPayload: payload, outputPayload: "GET queried all pages. No records left to map"))
         message.setBody(JsonOutput.toJson([]))
         return message
     }
@@ -80,9 +72,8 @@ def Message processData(Message message) {
         def outList = []
         for (def rec in records) {
             def recMap = [
-                "Field": rec.field
+                "Field": rec.field.text() ?: "",
             ]
-
             outList << recMap
         }
 
@@ -129,7 +120,11 @@ def Message processData(Message message) {
  */
 def isFdoneOne(String payload) {
     if (!payload) return false
-    payload = payload.toString()
+
+    def trimmed = payload.toString().trim()
+    if (!(trimmed.startsWith('<?xml') || trimmed.toLowerCase().startsWith('<soapenv:') || trimmed.toLowerCase().startsWith('<soap:'))) {
+        return false
+    }
 
     def newSafeSlurper = {
         def sp = new XmlSlurper()
@@ -143,75 +138,48 @@ def isFdoneOne(String payload) {
         return sp
     }
 
-    def unescapeXml = { String s ->
-        if (s == null) return ''
-        def x = s
-        x = x.replaceAll('&lt;', '<')
-        x = x.replaceAll('&gt;', '>')
-        x = x.replaceAll('&quot;', '"')
-        x = x.replaceAll('&apos;', "'")
-        x = x.replaceAll('&amp;', '&')
-        return x
-    }
-
-    def trimmed = payload.trim()
-    if (! (trimmed.startsWith('<?xml') || trimmed.toLowerCase().startsWith('<soapenv:') || trimmed.toLowerCase().startsWith('<soap:')) ) {
-        // Not XML/SOAP — no fdone to inspect
-        return false
+    def sanitizeXml = { String s ->
+        if (!s) return ''
+        s.replaceAll('&lt;', '<')
+         .replaceAll('&gt;', '>')
+         .replaceAll('&quot;', '"')
+         .replaceAll('&apos;', "'")
+         .replaceAll('&amp;', '&')
+         .replaceAll(/&(?!([A-Za-z0-9]+|#\d+|#x[0-9A-Fa-f]+);)/, '&amp;')
     }
 
     try {
-        def sl = newSafeSlurper()
-        def envelope = sl.parseText(payload)
+        def envelope = newSafeSlurper().parseText(trimmed)
 
-        boolean fdoneFound = false
-        boolean hasRecords = false
+        def fdoneFound = envelope.'**'.find { it.name() == 'fdone' }?.text()?.trim() == '1'
 
-        // Look for direct <fdone> in envelope
-        def direct = envelope.'**'.find { it.name() == 'fdone' }
-        if (direct && direct.text()?.trim() == '1') {
-            fdoneFound = true
+        def hasRecords = false
+        try {
+            hasRecords = envelope.'**'.findAll { it.name() == 'record' }?.size() > 0
+        } catch (e) {
+            hasRecords = false
         }
 
-        // If there's an inner <Result> string, unescape and parse it then search for fdone
-        def innerXml = envelope.Body?.callResponse?.Result?.text() ?: envelope.'**'.find { it.name() == 'Result' }?.text()
+        def innerXml = envelope.Body?.callResponse?.Result?.text()
+                    ?: envelope.'**'.find { it.name() == 'Result' }?.text()
+
         if (innerXml) {
-            // Ensure we don't pass stray unescaped '&' to the XML parser which
-            // throws "The entity name must immediately follow the '&'...".
-            def sanitizeXml = { String s ->
-                if (s == null) return ''
-                return s.replaceAll(/&(?!([A-Za-z0-9]+|#\d+|#x[0-9A-Fa-f]+);)/, '&amp;')
-            }
-
-            def innerUnescaped = sanitizeXml(unescapeXml(innerXml))
-            try {
-                def innerRoot = newSafeSlurper().parseText(innerUnescaped)
-                def innerFdone = innerRoot.'**'.find { it.name() == 'fdone' }
-                if (innerFdone && innerFdone.text()?.trim() == '1') {
-                    fdoneFound = true
+            def innerRoot = newSafeSlurper().parseText(sanitizeXml(innerXml))
+            if (!fdoneFound) fdoneFound = innerRoot.'**'.find { it.name() == 'fdone' }?.text()?.trim() == '1'
+            if (!hasRecords) {
+                try {
+                    hasRecords = innerRoot.'**'.findAll { it.name() == 'record' }?.size() > 0
+                } catch (e) {
+                    hasRecords = false
                 }
-
-                // Check for <record> nodes inside inner content
-                try { hasRecords = (innerRoot.data?.record?.size() ?: 0) > 0 } catch (e) { hasRecords = false }
-            } catch (e) {
-                // ignore parsing errors of inner content
             }
         }
 
-        // Fallback: check for <record> directly under envelope
-        if (!hasRecords) {
-            try { hasRecords = (envelope.data?.record?.size() ?: 0) > 0 } catch (e) { hasRecords = false }
-        }
+        return fdoneFound && !hasRecords
 
-        // Only treat as done when fdone==1 AND there are no record items
-        if (fdoneFound && !hasRecords) {
-            return true
-        }
     } catch (e) {
         return false
     }
-
-    return false
 }
 
 /**
@@ -1132,13 +1100,7 @@ def extractW3PCredentials() {
             return [status: -1, message: "Missing W3P Configuration in Secure Store (${Constants.W3P_CRED}/${Constants.W3P_URL})."]
         }
 
-        return [
-            status: 1,
-            message: "Success",
-            id: id,
-            key: key,
-            baseUrl: baseUrl
-        ]
+        return [status: 1, message: "Success", id: id, key: key, baseUrl: baseUrl ]
     } catch (Exception e) {
         return [status: -1, message: "Error extracting credentials: ${e.message}"]
     }
