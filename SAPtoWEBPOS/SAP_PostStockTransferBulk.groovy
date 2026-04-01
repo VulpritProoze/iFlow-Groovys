@@ -115,7 +115,7 @@ def Message processData(Message message) {
                     continue
                 }
                 if (getRes?.payload?.size() > 0) {
-                    errorItems << [index: i + 1, firstField: firstKey, firstValue: firstValue, message: "This stock transfer already exists. Cannot POST this item", payload: (getRes?.payload != null ? "${getRes.payload.toString().take(200)}...".take(200) : "")]
+                    errorItems << [index: i + 1, firstField: firstKey, firstValue: firstValue, message: "This stock transfer already exists. Cannot POST this item", payload: (getRes?.payload != null ? "${getRes.payload.toString().take(200)}..." : "")]
                     results << [index: i + 1, status: 'ERROR', message: 'Already exists']
                     continue
                 }
