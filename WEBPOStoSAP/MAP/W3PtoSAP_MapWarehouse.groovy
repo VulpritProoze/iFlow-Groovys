@@ -59,7 +59,7 @@ def Message processData(Message message) {
         message.setBody(JsonOutput.toJson([]))
         return message
     }
-    
+
     // Example usage
     try {
         def records = extractRecordsFromPayload(payload)
@@ -1088,13 +1088,7 @@ def extractW3PCredentials() {
             return [status: -1, message: "Missing W3P Configuration in Secure Store (${Constants.W3P_CRED}/${Constants.W3P_URL})."]
         }
 
-        return [
-            status: 1,
-            message: "Success",
-            id: id,
-            key: key,
-            baseUrl: baseUrl
-        ]
+        return [status: 1, message: "Success", id: id, key: key, baseUrl: baseUrl ]
     } catch (Exception e) {
         return [status: -1, message: "Error extracting credentials: ${e.message}"]
     }
