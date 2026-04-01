@@ -1,7 +1,10 @@
 /**
  * SAP_PostUOMGroupBulk.groovy
  * From W3P: UoM
- * To SAP: UoMGroup & UoM
+ * Mapper: POST to UoM individually
+ * To SAP: UoMGroup
+ *
+ * Copy of AgnosticSAPPosterBulkIndiv
  * 
  * Dependencies:
  * - Misc/ExtractSLCredentials.groovy (Helper methods appended/integrated)
@@ -9,6 +12,7 @@
  * - Misc/LoggerService.groovy (Standalone implementation appended below)
  * - Misc/FormatBatchResponse.groovy (Integrated logic)
  */
+
 import java.net.URL
 import java.net.HttpURLConnection
 import groovy.json.JsonOutput
@@ -28,46 +32,31 @@ import com.sap.it.api.securestore.SecureStoreService
 
 class Constants {
     static final String STEP_NAME = "SAP_PostUOMGroupBulk"
-    static final String SESSION_VAR_PROP_NAME = "[B1SESSION]"
-    static final String BASE_URL_PROP_NAME = "[SL_BaseURL]"
+    static final String SESSION_VAR_PROP_NAME = "ITGWEPOSSAPINTEGRATION3_SL_Session"
+    static final String BASE_URL_PROP_NAME = "ITGWEPOSSAPINTEGRATION3_SL_BaseUrl"
     /** The relative OData endpoint for the entity (e.g., /Warehouses) */
     static final String ENTITY_ENDPOINT = "/UnitOfMeasurementGroups"
 
     // For logging
-    static final String W3P_CRED = "[W3P_CRED]"
-    static final String W3P_URL = "[W3P_URL]"
+    static final String W3P_CRED = "ITGWEPOSSAPINTEGRATION_W3P_CREDS"
+    static final String W3P_URL = "ITGWEPOSSAPINTEGRATION_WEBPOS_URL"
 
     // Logging Constant/s
     static final String LOG_RECID = "W3P"
 }
 
-
 /**
  * Process the incoming response and post all contained records to SAP in one bulk request.
  *
- * Parses the message body (SOAP or JSON), extracts all <record> elements, converts them
- * to JSON, and submits them as a single multipart OData $batch (changeset) POST.
- * Expects `SESSION_VAR_PROP_NAME` and `BASE_URL_PROP_NAME` to be available as message
- * properties for session and service endpoint. Logs summary and details of the batch result.
- *
- * Customizability: See line 101 - 108
  */
 def Message processData(Message message) {
     def logger = new LoggerService(messageLogFactory, message)
-    try {
-        logger.injectW3PCredentials()
-    } catch (Exception e) {
-        logger.logInternal(new LogRequest(stepName: "${Constants.STEP_NAME}_LOGGER_FAILURE", title: Constants.LOG_RECID, status: "ERROR", inputPayload: 'Nothing yet.', outputPayload: "LoggerService failed: ${e.message}"))
-    }
-
+    try { logger.injectW3PCredentials() } catch (Exception e) { logger.logInternal(new LogRequest(stepName: "${Constants.STEP_NAME}_LOGGER_FAILURE", title: Constants.LOG_RECID, status: "ERROR", inputPayload: 'Nothing yet.', outputPayload: "LoggerService failed: ${e.message}")) }
+    
     def payload = ''
     def reader = message.getBody(java.io.Reader)
     if (reader != null) {
-        try {
-            payload = reader.getText() ?: ''
-        } finally {
-            try { reader.close() } catch (e) { /* ignore close errors */ }
-        }
+        try { payload = reader.getText() ?: '' } finally { try { reader.close() } catch (e) {} }
     } else {
         payload = (message.getBody(java.lang.String) ?: '')
     }
@@ -88,35 +77,25 @@ def Message processData(Message message) {
     def sessionCookie = sapCreds.sessionCookie
     def baseUrl = sapCreds.baseUrl
 
-    def recordList = new JsonSlurper().parseText(payload)
+    try {
+        def recordList = new JsonSlurper().parseText(payload)
+        def conn = new HTTPODataConnection(baseUrl).setSessionCookie(sessionCookie)
 
-    // create connection early so we can query SAP before building parts
-    def conn = new HTTPODataConnection(baseUrl).setSessionCookie(sessionCookie)
+        def results = []
+        def successItems = []
+        def errorItems = []
 
-    // 1. Define Unique Boundaries
-    String batchId = "batch_" + java.util.UUID.randomUUID().toString()
-    String changesetId = "changeset_" + java.util.UUID.randomUUID().toString()
+        for (int i = 0; i < recordList.size(); i++) {
+            def record = recordList[i]
 
-    // 2. Build the Multipart Batch Body
-    // Note: Using \r\n (CRLF) is mandatory for multipart/mixed standards
-    StringBuilder batchBody = new StringBuilder()
-    batchBody.append("--${batchId}\r\n")
-    batchBody.append("Content-Type: multipart/mixed; boundary=${changesetId}\r\n\r\n")
+            def code = (record.Code ?: record.code ?: record.uom ?: record.UnitOfMeasure ?: '')?.toString()
+            def method = 'POST'
+            def id = null
 
-    /*
-     * This part of the code is customizable. We can do api calls here to SAP, to for example,
-     * check if the endpoint already has those items that we want to POST (POST is not idempotent).
-     * Sometimes, we want to PATCH it instead. 
-    */
-    recordList.each { record ->
-        def code = (record.Code ?: record.code ?: record.uom ?: record.UnitOfMeasure ?: '')?.toString()
-        def method = 'POST'
-        def id = null
+            if (code) {
+                def esc = code.replace("'", "''")
+                def filterUrl = "/UnitOfMeasurementGroups?\$filter=Code%20eq%20'${esc}'"
 
-        if (code) {
-            def esc = code.replace("'", "''")
-            def filterUrl = "/UnitOfMeasurementGroups?\$filter=Code%20eq%20'${esc}'"
-            try {
                 def getRes = conn.get(new ODataRequestBody(url: filterUrl))
                 if (getRes.status == 1 && getRes.payload?.value && getRes.payload.value.size() > 0) {
                     method = 'PATCH'
@@ -124,95 +103,94 @@ def Message processData(Message message) {
                 } else {
                     method = 'POST'
                 }
+            }
+
+            def stepNameIndexed = "${Constants.STEP_NAME}_${i + 1}"
+
+            // extract first field/key and its value in an agnostic way
+            def firstKey = ''
+            def firstValue = ''
+            try {
+                if (record instanceof Map && !record.isEmpty()) {
+                    def it = record.entrySet().iterator()
+                    if (it.hasNext()) {
+                        def e = it.next()
+                        firstKey = e.key?.toString() ?: ''
+                        firstValue = (e.value != null ? e.value.toString() : '')
+                    }
+                } else if (record instanceof List && record.size() > 0) {
+                    firstKey = '0'
+                    firstValue = record[0]?.toString() ?: ''
+                }
             } catch (e) {
-                method = 'POST'
+                firstKey = ''
+                firstValue = ''
+            }
+
+            try {
+                def req = new ODataRequestBody()
+                
+                req.payload = JsonOutput.toJson(record)
+                req.requestProperty = ['Content-Type': 'application/json']
+
+                def res = null
+                if (method == 'POST') {
+                    req.url = Constants.ENTITY_ENDPOINT
+                    res = conn.post(req)
+                } else if (method == 'PATCH') {
+                    if (id == null) {
+                        logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_ERR", title: Constants.LOG_RECID, status: "ERROR", inputPayload: "${req}", outputPayload: "Id cannot be null when doing PATCH to ${Constants.ENTITY_ENDPOINT}"))
+                        message.setBody(JsonOutput.toJson([]))
+                        return message
+                    }
+
+                    req.requestProperty['If-Match'] = '*'
+                    req.url = "${Constants.ENTITY_ENDPOINT}(${id})"
+                    res = conn.patch(req)
+                } else {
+                    logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_ERR", title: Constants.LOG_RECID, status: "ERROR", inputPayload: "${req}", outputPayload: "Invalid request method."))
+                    message.setBody(JsonOutput.toJson([]))
+                    return message
+                }
+
+                if (res?.status == 1) {
+                    // collect minimal success info (avoid logging every success)
+                    successItems << [index: i + 1, firstField: firstKey, firstValue: firstValue]
+                    results << [index: i + 1, status: 'OK']
+                } else {
+                    errorItems << [index: i + 1, firstField: firstKey, firstValue: firstValue, message: res?.message, payload: res?.payload]
+                    results << [index: i + 1, status: 'ERROR', message: res?.message]
+                }
+            } catch (Exception e) {
+                errorItems << [index: i + 1, ItemCode: record?.ItemCode ?: '', message: e.message]
+                results << [index: i + 1, status: 'ERROR', message: e.message]
             }
         }
 
-        batchBody.append(sapRequestBatchBodyBuilder(record, changesetId, method, id))
-    }
-
-    batchBody.append("--${changesetId}--\r\n")
-    batchBody.append("--${batchId}--")
-
-    // 3. Setup Request Object
-    // We map the batchBody string to the 'payload' field as defined in your DTO
-    def request = new ODataRequestBody(url: "/\$batch", payload: batchBody.toString(), requestProperty: [ 'Content-Type': "multipart/mixed; boundary=${batchId}" ])
-
-    try {
-        // Your connection class 'post' method writes request.payload to the output stream
-        conn.post(request)
-        
-        // Use the raw body if it exists, otherwise fallback to empty string
-        String rawBody = conn.getBody() ?: ""
-        
-        def formattedResponse = formatBatchResponse(rawBody)
-        if (formattedResponse.status != 1) {
-            logger.logBoth(new LogRequest(stepName: Constants.STEP_NAME, title: Constants.LOG_RECID, status: "ERROR", inputPayload: request.payload, outputPayload: "Batch Parsing Error: ${formattedResponse.message}\n\nOriginal Body:\n${rawBody}"))
-            message.setBody(rawBody)
-            return message
+        // Log aggregated success summary (do not log every successful item)
+        if (successItems.size() > 0) {
+            def successSummary = [
+                endpoint: Constants.ENTITY_ENDPOINT,
+                totalItems: recordList.size(),
+                successfulCount: successItems.size(),
+                sampleFirstValues: successItems.collect { it.firstValue }[0..Math.max(0, Math.min(successItems.size()-1, 19))]
+            ]
+            def prettySuccess = JsonOutput.prettyPrint(JsonOutput.toJson(successSummary))
+            logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_OK", title: Constants.LOG_RECID, status: "OK", inputPayload: "Processed ${recordList.size()} items", outputPayload: prettySuccess))
         }
 
-        logger.logBoth(new LogRequest(stepName: Constants.STEP_NAME, title: Constants.LOG_RECID, status: "OK", inputPayload: request.payload, outputPayload: "Records processed: ${recordList.size()}\n\nResponse:\n${formattedResponse.payload}"))
-        
-        message.setBody(rawBody)
-    } catch (Exception e) {
-        logger.logBoth(new LogRequest(stepName: Constants.STEP_NAME, title: Constants.LOG_RECID, status: "ERROR", inputPayload: request.payload, outputPayload: e.getMessage()))
-    }
+        // Log aggregated errors with details (prettified)
+        if (errorItems.size() > 0) {
+            def errorReport = [endpoint: Constants.ENTITY_ENDPOINT, failedCount: errorItems.size(), details: errorItems]
+            def prettyError = JsonOutput.prettyPrint(JsonOutput.toJson(errorReport))
+            logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_ERRORS", title: Constants.LOG_RECID, status: "ERROR", inputPayload: "Processed ${recordList.size()} items", outputPayload: prettyError))
+        }
 
+    } catch (Exception e) {
+        logger.logBoth(new LogRequest(title: Constants.LOG_RECID, stepName: "${Constants.STEP_NAME}_UNHANDLED_ERR", status: "ERROR", inputPayload: payload, outputPayload: "Exception: ${e.message}\nStacktrace: ${e.stackTrace.join('\n')}"))
+    }
     return message
 }
-
-/**
- * Builds a single multipart changeset part for a given record.
- * summary: Build one changeset/part for OData $batch
- * params: record - the record object to include in the part, changesetId - the multipart boundary for the changeset,
- *      method - the http method (PUT, PATCH, POST, DELETE), id - only for PATCH and DELETE requests
- * description: Returns the string representing the multipart section for one record (including the leading changeset boundary).
- * example: sapRequestBatchBodyBuilder(record, changesetId)
- */
-def sapRequestBatchBodyBuilder(Object record, String changesetId, String method, Object id = null) {
-    def m = (method ?: '').toString().toUpperCase()
-    def allowed = ['PUT', 'PATCH', 'POST', 'DELETE']
-    if (!allowed.contains(m)) return // Only allow these methods
-
-    // Validation rules for id:
-    // - If id is provided, the method must be PATCH or DELETE (id allowed only for those)
-    // - If method is PATCH or DELETE, an id must be provided
-    if (id != null && !(m in ['PATCH', 'DELETE'])) return
-    if ((m in ['PATCH', 'DELETE']) && (id == null || id.toString().trim() == '')) return
-
-    StringBuilder part = new StringBuilder()
-    part.append("--${changesetId}\r\n")
-    part.append("Content-Type: application/http\r\n")
-    part.append("Content-Transfer-Encoding: binary\r\n\r\n")
-
-    // Build request line. Append (id) for PATCH and DELETE methods.
-    // Id is checked if it is a number or string
-    def endpointSuffix = ''
-    if (m in ['PATCH', 'DELETE']) {
-        def iidObj = id
-        if (iidObj != null) {
-            if (iidObj instanceof Number) {
-                endpointSuffix = "(${iidObj.toString()})"
-            } else {
-                def idStr = iidObj.toString().trim()
-                def esc = idStr.replace("'", "''")
-                endpointSuffix = "('${esc}')"
-            }
-        }
-    }
-    // Request-line must include HTTP version for SAP Service Layer $batch parsing
-    part.append("${m} /b1s/v1${Constants.ENTITY_ENDPOINT}${endpointSuffix} HTTP/1.1\r\n")
-    // Include If-Match for PATCH to ensure correct optimistic concurrency handling in SL
-    if (m == 'PATCH') {
-        part.append("If-Match: *\r\n")
-    }
-    part.append("Content-Type: application/json\r\n\r\n")
-    part.append(JsonOutput.toJson(record)).append("\r\n\r\n")
-    return part.toString()
-}
-
 
 /**
  * Represents the configuration for an HTTP OData request.
