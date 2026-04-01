@@ -144,7 +144,7 @@ def Message processData(Message message) {
             def prettyError = JsonOutput.prettyPrint(JsonOutput.toJson(errorReport))
             logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_ERRORS", title: Constants.LOG_RECID, status: "ERROR", inputPayload: "Processed ${recordList.size()} items", outputPayload: prettyError))
         }
-    } catch (Exception ex) {
+    } catch (Exception e) {
         logger.logBoth(new LogRequest(title: Constants.LOG_RECID, stepName: "${Constants.STEP_NAME}_UNHANDLED_ERR", status: "ERROR", inputPayload: payload, outputPayload: "Exception: ${e.message}\nStacktrace: ${e.stackTrace.join('\n')}"))
     }
     return message
