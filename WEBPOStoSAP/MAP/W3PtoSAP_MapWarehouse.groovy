@@ -1,8 +1,14 @@
 /**
  * W3PtoSAP_MapWarehouse.groovy
+ *
+ * - Removed simple mappings. All mappings will have to be customized
+ * - IsFDoneOne method now also checks for empty messagebody payload
  * 
  * Dependencies:
+ * - Misc/Mapper.groovy (Logic refactored and appended below)
  * - Misc/LoggerService.groovy (Logic refactored and appended below)
+ * - Misc/ODataConnection.groovy
+ * - Misc/SOAPConnection.groovy
  */
 import com.sap.gateway.ip.core.customdev.util.Message;
 import groovy.util.XmlSlurper;
@@ -23,158 +29,64 @@ import javax.net.ssl.SSLSession
 import java.security.cert.X509Certificate
 
 class Constants {
-    static final String W3P_CRED = "[W3P_CRED]"
-    static final String W3P_URL = "[W3P_URL]"
-    static final String STEP_NAME = "W3PtoSAP_MapWarehouses"
-    
-    /**
-     * Mapping configuration for transforming source records into target objects.
-     *
-     * Capabilities:
-     * - Simple flat mappings: map target field -> source token (e.g. ["Code":"fuomid","Name":"fname"]).
-     * - Nested mappings: Map values produce nested objects recursively.
-     * - Lists: List values produce arrays of resolved items.
-     * - Closures: dynamic generators with signature { responsesMap, currentRecord, idx -> ... }.
-     * - Expressions: string expressions supporting +, -, *, / with operator precedence.
-     *   - Use RESPONSE.field to reference other response sets (for example: "GET_WAREHOUSE.fsiteid").
-     *   - Use quoted literals 'text' or "text".
-     *   - '+' will concatenate when operands are non-numeric, otherwise perform numeric addition.
-     * - Custom rules: use `Constants.CUSTOM_RULES` to register per-path transformation closures.
-     *
-     * Examples:
-     * static final Map MAPPING = [
-     *   "Code": "fuomid",                     // simple field mapping
-     *   "Name": "fname",                      // simple field mapping
-     *   "Dimensions": [                         // nested object
-     *       "Height": "h",
-     *       "Width": "w"
-     *   ],
-     *   "Tags": ["tag1", "tag2"],           // static list
-     *   "DynamicList": { responses, rec, idx ->   // closure-based dynamic value
-     *       return [ A: rec.fname ?: '', B: responses.GET_X?.first?.value ?: '' ]
-     *   },
-     *   "Price": "unitPrice * quantity"       // arithmetic expression
-     * ]
-     *
-     * Notes:
-     * - Expressions and RESPONSE lookups are resolved at runtime by the mapper.
-     * - Use `Constants.CUSTOM_RULES['Path.To.Field'] = { val -> ... }` to post-process resolved values.
-     */
-    static final Map MAPPING = [
-        "WarehouseCode"   : "fsiteid",
-        "WarehouseName"   : "fname",
-        "Inactive"        : "factive_flag",
-    ]
-    static final Map CUSTOM_RULES = [
-        "Inactive": { val -> (val == "0" || val == "tYES") ? "tYES" : "tNO" }
-    ]
+    static final String W3P_CRED = "[W3P_CREDS]"
+    static final String W3P_URL = "[WEBPOS_URL]"
+    static final String STEP_NAME = "W3PtoSAP_MapWarehouse"
 
     // Logging Constant/s
     static final String LOG_RECID = "W3P"
+
+    // Uncomment these constants if logging in to SAP
+    // static final String SESSION_VAR_PROP_NAME = "[B1SESSION]"
+    // static final String BASE_URL_PROP_NAME = "[SL_BaseURL]"
 }
 
-/**
- * Agnostic Mapping Configuration.
- *
- * Usage (default):
- * - Add field mappings to `Constants.MAPPING`. The mapper will automatically
- *   map source fields to target fields and produce JSON suitable for POST by
- *   the next flow step.
- *
- * Advanced/customized usage:
- * - Uncomment and populate `Constants.SESSION_VAR_PROP_NAME` and
- *   `Constants.BASE_URL_PROP_NAME` if your mapping requires an authenticated
- *   SAP session.
- * - To supply SAP login/session token, attach a Content Modifier
- *   before this flow to extract the SAP session into the configured message
- *   property names (the constants above).
- * - Remove the entire `try` block inside `processData` and implement your 
- *   orchestration there (calls, enrichment, batching, etc.).
- *
- * Important:
- * - Do not modify the helper methods below (`extractMappedRecords`, etc.).
- * - If you need additional helpers, add them only after `processData` so the
- *   core helpers remain stable and reusable across flows.
- */
 def Message processData(Message message) {
     def logger = new LoggerService(messageLogFactory, message)
-    try {
-        logger.injectW3PCredentials()
-    } catch (Exception e) {
-        logger.logInternal(new LogRequest(stepName: "${Constants.STEP_NAME}_LOGGER_FAILURE", title: Constants.LOG_RECID, status: "ERROR", inputPayload: 'Nothing yet.', outputPayload: "LoggerService failed: ${e.message}"))
-    }
-
+    try { logger.injectW3PCredentials() } catch (Exception e) { logger.logInternal(new LogRequest(stepName: "${Constants.STEP_NAME}_LOGGER_FAILURE", title: Constants.LOG_RECID, status: "ERROR", inputPayload: 'Nothing yet.', outputPayload: "LoggerService failed: ${e.message}")) }
+    
     def payload = ''
     def reader = message.getBody(java.io.Reader)
     if (reader != null) {
-        try {
-            payload = reader.getText() ?: ''
-        } finally {
-            try { reader.close() } catch (e) { /* ignore close errors */ }
-        }
+        try { payload = reader.getText() ?: '' } finally { try { reader.close() } catch (e) {} }
     } else {
         payload = (message.getBody(java.lang.String) ?: '')
     }
 
-    // If the W3P response indicates processing is done (fdone == 1),
-    // short-circuit and return an empty mapping to avoid downstream work.
-    // Extract last-batch id property and pass it to the fdone checker so
-    // we can additionally validate the payload's <flast_batchid>.
-    def flastBatchProp = message.getProperty(Constants.LAST_BATCHID_PROP_NAME)
-    if (isFdoneOne(payload, flastBatchProp)) {
+    // End process if /GET returns last page with no records
+    if (isFdoneOne(payload)) {
         logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_FDONE", title: Constants.LOG_RECID, status: "OK", inputPayload: payload, outputPayload: "fdone == 1 - skipping mapping"))
         message.setBody(JsonOutput.toJson([]))
         return message
     }
-
-    // Clear out code in try block if customize
+    
+    // Example usage
     try {
-        // 1. Map data -> returns a Result map: [status:1|0, message: '', payload: [...]]
-        def result = extractMappedRecords(
-            payload, 
-            Constants.MAPPING, 
-            Constants.CUSTOM_RULES
-        )
-
-        if (!(result instanceof Map)) {
-            logger.logBoth(new LogRequest(stepName: "MAPPING_FAILURE", title: Constants.LOG_RECID, status: "ERROR", inputPayload: payload, outputPayload: "Mapper returned unexpected type"))
+        def records = extractRecordsFromPayload(payload)
+        if (records == null) {
+            logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_ERR", title: Constants.LOG_RECID, status: "ERROR", inputPayload: payload, outputPayload: "Invalid SOAP/XML payload"))
+            message.setBody(JsonOutput.toJson([]))
             return message
         }
 
-        if (result.status != 1) {
-            logger.logBoth(new LogRequest(stepName: "MAPPING_ERROR", title: Constants.LOG_RECID, status: "ERROR", inputPayload: payload, outputPayload: result.message ?: 'Mapping failed'))
-            return message
+        def outList = []
+        for (def rec in records) {
+            def recMap = [
+                "WarehouseCode": rec.fsiteid,
+                "WarehouseName": rec.fname,
+            ]
+            
+            recMap.Inactive = rec.factive_flag == "0" ? "tYES" : "tNO"
+
+            outList << recMap
         }
 
-        def mappedRecords = result.payload ?: []
-
-        if (mappedRecords.isEmpty() && payload.trim().startsWith("<")) {
-            logger.logBoth(new LogRequest(stepName: "MAPPING_NO_RECORDS", title: Constants.LOG_RECID, status: "ERROR", inputPayload: payload, outputPayload: "No records found or failed to parse XML <Result>."))
-            return message // Premature return instead of exception
-        }
-
-        // 2. Wrap it in a uniform JSON structure
-        def jsonResult = JsonOutput.toJson(mappedRecords)
-        
-        // 3. Log Success using logBoth and handle result
-        def logResult = logger.logBoth(new LogRequest(stepName: Constants.STEP_NAME, title: Constants.LOG_RECID, status: "OK", inputPayload: payload, outputPayload: JsonOutput.prettyPrint(jsonResult)))
-        
-        if (logResult.status != 1) {
-            // Log the logging failure using logBoth
-            logger.logBoth(new LogRequest(stepName: "PROCESS_LOG_FAILURE", title: Constants.LOG_RECID, status: "ERROR", inputPayload: payload, outputPayload: "LogProcess failed: ${logResult.message}"))
-        }
-        
-        // 4. Set the new JSON body back to the message
+        def jsonResult = JsonOutput.toJson(outList)
         message.setBody(jsonResult)
-        
+        logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_OK", title: Constants.LOG_RECID, status: "OK", inputPayload: payload, outputPayload: JsonOutput.prettyPrint(jsonResult))) 
     } catch (Exception e) {
         message.setBody(JsonOutput.toJson([]))
-        def stackTrace = e.stackTrace.take(15).join('\n')
-        def logErrResult = logger.logBoth(new LogRequest(stepName: Constants.STEP_NAME, title: Constants.LOG_RECID, status: "ERROR", inputPayload: "Original Payload length: ${payload?.length() ?: 0}", outputPayload: "Exception: ${e.message}\nStacktrace: ${stackTrace}"))
-
-        if (logErrResult.status != 1) {
-            logger.logBoth(new LogRequest(stepName: "ERROR_LOGGING_FAILURE", title: Constants.LOG_RECID, status: "ERROR", inputPayload: payload, outputPayload: "Failed to log original error to process: ${logErrResult.message}\n\nOriginal Error: ${e.message}"))
-        }
+        logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_UNHANDLED_ERR", title: Constants.LOG_RECID, status: "ERROR", inputPayload: "Original Payload length: ${payload?.length() ?: 0}", outputPayload: "Exception: ${e.message}\nStacktrace: ${e.stackTrace.join('\n')}"))
     }
     
     return message
@@ -205,328 +117,57 @@ def Message processData(Message message) {
 // HELPER METHODS
 // Do not modify
 
-
-/**
- * Agnostic Payload Processor (Refactored from Mapper.groovy)
- * Given SOAP XML response (payload), mapping, and mapping rules,
- * outputs an array of Maps consisting of mapped response
- */
-def extractMappedRecords(String payload, Map mapping, Map customRules = [:]) {
-    if (!payload) return [status: 0, message: 'Empty payload', payload: []]
-    payload = payload.toString()
-
-    // Helper: safe XmlSlurper factory
-    def newSafeSlurper = {
-        def sp = new XmlSlurper()
-        try {
-            sp.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true)
-            sp.setFeature("http://xml.org/sax/features/external-general-entities", false)
-            sp.setFeature("http://xml.org/sax/features/external-parameter-entities", false)
-        } catch (e) {
-            // ignore if not supported
-        }
-        return sp
-    }
-
-    // Convert a GPathResult <record> to a plain map (text values unescaped)
-    def recordToMap = { GPathResult rec ->
-        def m = [:]
-        def rid = rec.@id?.toString()
-        if (rid) m['id'] = rid
-        rec.children().each { ch ->
-            if (ch?.name()) m[ch.name()] = ch.text()
-        }
-        return m
-    }
-
-    // Resolve a single token (plain field)
-    // idx: optional index into response records when producing per-record mapped outputs
-    def resolveToken = { String token, Map responsesMap, Map currentRecord = null, Integer idx = null ->
-        if (!token) return ''
-        token = token.trim()
-        // literal quoted string
-        if ((token.startsWith("\'") && token.endsWith("\'")) || (token.startsWith('"') && token.endsWith('"'))) {
-            return token.substring(1, token.length() - 1)
-        }
-
-        // current record field
-        if (currentRecord != null && currentRecord.containsKey(token)) {
-            return currentRecord[token] ?: ''
-        }
-
-        // fallback literal
-        return token
-    }
-
-    // Numeric helper: try convert to BigDecimal, return null on failure
-    def toBigDecimal = { val ->
-        if (val == null) return null
-        if (val instanceof Number) return new BigDecimal(val.toString())
-        try {
-            def s = val.toString().trim()
-            if (s == '') return null
-            return new BigDecimal(s)
-        } catch (Exception e) {
-            return null
-        }
-    }
-
-    // Tokenize expression into numbers, quoted strings, identifiers, and operators
-    def tokenizeExpr = { String expr ->
-        if (!expr) return []
-        def pattern = /'[^']*'|"[^"]*"|\d+(?:\.\d+)?|[A-Za-z0-9_\[\]=\.]+|[()+\-\*\/]/
-        def m = expr =~ pattern
-        def tokens = []
-        while (m.find()) { tokens << m.group().trim() }
-        return tokens
-    }
-
-    // Resolve an expression supporting +, -, *, / with precedence. '+' behaves as concat when any operand is non-numeric.
-    // Throws IllegalArgumentException on invalid numeric usage (e.g. '*' on non-numeric fields).
-    def resolveExpression = { String expr, Map responsesMap, Map currentRecord = null, Integer idx = null ->
-        if (expr == null) return ''
-        if (!(expr instanceof String)) return expr.toString()
-        expr = expr.trim()
-        if (expr == '') return ''
-
-        def tokens = tokenizeExpr(expr)
-        if (!tokens) return ''
-
-        // Helper to get runtime value for a token (using resolveToken closure above)
-        def resolveOperand = { String tok ->
-            if (tok == null) return ''
-            return resolveToken(tok, responsesMap, currentRecord, idx)
-        }
-
-        // First pass: handle * and /
-        def tlist = tokens.collect { it }
-        int j = 0
-        while (j < tlist.size()) {
-            def tk = tlist[j]
-            if (tk == '*' || tk == '/') {
-                if (j == 0 || j == tlist.size() - 1) throw new IllegalArgumentException("Invalid expression: ${expr}")
-                def leftTok = tlist[j - 1]
-                def rightTok = tlist[j + 1]
-                def leftVal = resolveOperand(leftTok)
-                def rightVal = resolveOperand(rightTok)
-                def leftNum = toBigDecimal(leftVal)
-                def rightNum = toBigDecimal(rightVal)
-                if (leftNum == null || rightNum == null) {
-                    throw new IllegalArgumentException("Expression '${expr}': operator '${tk}' requires numeric operands (left='${leftVal}', right='${rightVal}')")
-                }
-                if (tk == '/' && rightNum.compareTo(BigDecimal.ZERO) == 0) {
-                    throw new IllegalArgumentException("Expression '${expr}': division by zero (left='${leftVal}', right='${rightVal}')")
-                }
-                def resNum = (tk == '*') ? leftNum.multiply(rightNum) : leftNum.divide(rightNum, 10, BigDecimal.ROUND_HALF_UP)
-                def resStr = resNum.stripTrailingZeros().toPlainString()
-                // replace left,op,right with result
-                tlist[j - 1] = resStr
-                tlist.remove(j + 1)
-                tlist.remove(j)
-                j = Math.max(j - 1, 0)
-            } else {
-                j++
-            }
-        }
-
-        // Second pass: handle + and - (left to right). + is numeric add when both numeric, else concatenation
-        int i = 0
-        while (i < tlist.size()) {
-            def tk = tlist[i]
-            if (tk == '+' || tk == '-') {
-                if (i == 0 || i == tlist.size() - 1) throw new IllegalArgumentException("Invalid expression: ${expr}")
-                def leftTok = tlist[i - 1]
-                def rightTok = tlist[i + 1]
-                def leftVal = resolveOperand(leftTok)
-                def rightVal = resolveOperand(rightTok)
-                def leftNum = toBigDecimal(leftVal)
-                def rightNum = toBigDecimal(rightVal)
-                def resStr
-                if (tk == '+') {
-                    if (leftNum != null && rightNum != null) {
-                        def sum = leftNum.add(rightNum)
-                        resStr = sum.stripTrailingZeros().toPlainString()
-                    } else {
-                        // string concatenation
-                        resStr = (leftVal == null ? '' : leftVal.toString()) + (rightVal == null ? '' : rightVal.toString())
-                    }
-                } else {
-                    // '-' requires numeric
-                    if (leftNum == null || rightNum == null) {
-                        throw new IllegalArgumentException("Expression '${expr}': operator '-' requires numeric operands (left='${leftVal}', right='${rightVal}')")
-                    }
-                    def diff = leftNum.subtract(rightNum)
-                    resStr = diff.stripTrailingZeros().toPlainString()
-                }
-                tlist[i - 1] = resStr
-                tlist.remove(i + 1)
-                tlist.remove(i)
-                i = Math.max(i - 1, 0)
-            } else {
-                i++
-            }
-        }
-
-        // Final token: resolve and return
-        def finalTok = tlist.size() ? tlist[0] : ''
-        if (finalTok == null) return ''
-        // If it's a quoted literal, strip quotes
-        if ((finalTok.startsWith("'") && finalTok.endsWith("'")) || (finalTok.startsWith('"') && finalTok.endsWith('"'))) {
-            return finalTok.substring(1, finalTok.length() - 1)
-        }
-        // Otherwise resolve via resolveToken to get runtime value (handles RESPONSE.field and currentRecord)
-        return resolveToken(finalTok, responsesMap, currentRecord, idx) ?: ''
-    }
-
-        // Resolve a mapping specification which may be:
-        // - a String expression -> resolves via resolveExpression
-        // - a Map -> treated as a nested mapping (recurses)
-        // - a List -> each element resolved and returned as a list
-        // - a Closure -> dynamic constructor invoked as closure(responsesMap, currentRecord, idx)
-        // path: dot-delimited key path used to apply customRules (if provided)
-    def resolveMappingValue = { def spec, Map responsesMap, Map currentRecord = null, Integer idx = null, String path = null ->
-        if (spec == null) return ''
-
-        if (spec instanceof Closure) {
-            try {
-                return spec(responsesMap, currentRecord, idx)
-            } catch (e) {
-                throw new IllegalArgumentException("Mapping closure for '${path ?: 'root'}' threw: ${e.message}")
-            }
-        }
-
-        // Nested map -> build nested object recursively
-        if (spec instanceof Map) {
-            def nested = [:]
-            spec.each { nk, nSpec ->
-                def childPath = (path ? (path + '.' + nk) : nk.toString())
-                nested[nk] = resolveMappingValue(nSpec, responsesMap, currentRecord, idx, childPath)
-            }
-            return nested
-        }
-
-        // List -> resolve each element
-        if (spec instanceof List) {
-            return spec.collect { item -> resolveMappingValue(item, responsesMap, currentRecord, idx, path) }
-        }
-
-        // Leaf: string/primitive -> resolve expression and apply customRules if any for full path
-        def resolved = resolveExpression(spec?.toString(), responsesMap, currentRecord, idx)
-        if (path != null && customRules.containsKey(path)) {
-            return customRules[path](resolved)
-        }
-        return resolved ?: ''
-    }
-
-    // Parse SOAP XML payload using centralized extractor
-    if (payload.trim().startsWith('<')) {
-        try {
-            def records = extractRecordsFromPayload(payload)
-            if (records == null) {
-                return [status: 0, message: 'Invalid SOAP payload: missing XML declaration or SOAP Envelope', payload: []]
-            }
-
-            def mappedList = records.collect { rec ->
-                def recMap = (rec instanceof GPathResult) ? recordToMap(rec) : (rec instanceof Map ? rec : [value: rec.toString()])
-                def mapped = [:]
-                mapping.each { target, sourceSpec ->
-                    mapped[target] = resolveMappingValue(sourceSpec, [:], recMap, null, target)
-                }
-                mapped
-            }
-            return [status: 1, message: 'OK', payload: mappedList]
-        } catch (IllegalArgumentException e) {
-            return [status: 0, message: "Mapping error: ${e.message}", payload: []]
-        } catch (Exception e) {
-            return [status: 0, message: "Failed to parse records: ${e.message}", payload: []]
-        }
-    } else {
-        // Only SOAP/XML payloads are supported by this mapper.
-        return [status: 0, message: 'Invalid payload: only SOAP/XML (SOAP envelope) supported', payload: []]
-    }
-}
-
-
 /**
  * Detect whether the payload (SOAP envelope or inner Result) contains
  * an <fdone> element with value '1'. This is used to skip mapping when
  * W3P indicates processing is finished.
  */
-def isFdoneOne(String payload, String flastBatchId = null) {
+def isFdoneOne(String payload) {
     if (!payload) return false
-    payload = payload.toString()
 
-    def newSafeSlurper = {
-        def sp = new XmlSlurper()
-        try {
-            sp.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true)
-            sp.setFeature("http://xml.org/sax/features/external-general-entities", false)
-            sp.setFeature("http://xml.org/sax/features/external-parameter-entities", false)
-        } catch (e) {
-            // ignore if not supported
-        }
-        return sp
-    }
-
-    def unescapeXml = { String s ->
-        if (s == null) return ''
-        def x = s
-        x = x.replaceAll('&lt;', '<')
-        x = x.replaceAll('&gt;', '>')
-        x = x.replaceAll('&quot;', '"')
-        x = x.replaceAll('&apos;', "'")
-        x = x.replaceAll('&amp;', '&')
-        return x
-    }
-
-    def trimmed = payload.trim()
-    if (! (trimmed.startsWith('<?xml') || trimmed.toLowerCase().startsWith('<soapenv:') || trimmed.toLowerCase().startsWith('<soap:')) ) {
-        // Not XML/SOAP — no fdone to inspect
+    def trimmed = payload.toString().trim()
+    if (!(trimmed.startsWith('<?xml') || trimmed.toLowerCase().startsWith('<soapenv:') || trimmed.toLowerCase().startsWith('<soap:'))) {
         return false
     }
 
     try {
-        def sl = newSafeSlurper()
-        def envelope = sl.parseText(payload)
-
-        // Helper to validate flast_batchid presence/equality
-        def validateFlast = { root ->
-            def flast = root.'**'.find { it.name() == 'flast_batchid' || it.name() == 'flastbatchid' }?.text()?.trim()
-            if (flast) {
-                if (flastBatchId) {
-                    return (flast == flastBatchId)
-                }
-            }
-            // flast not present => fail stronger check
-            return false
+        def newSafeSlurper = {
+            def sp = new XmlSlurper()
+            sp.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true)
+            sp.setFeature("http://xml.org/sax/features/external-general-entities", false)
+            sp.setFeature("http://xml.org/sax/features/external-parameter-entities", false)
+            return sp
         }
 
-        // Look for direct <fdone> in envelope
-        def direct = envelope.'**'.find { it.name() == 'fdone' }
-        if (direct && direct.text()?.trim() == '1') {
-            // require flast_batchid in payload and optionally match provided property
-            return validateFlast(envelope)
+        def sanitizeXml = { String s ->
+            if (!s) return ''
+            s.replaceAll('&lt;', '<')
+             .replaceAll('&gt;', '>')
+             .replaceAll('&quot;', '"')
+             .replaceAll('&apos;', "'")
+             .replaceAll('&amp;', '&')
+             .replaceAll(/&(?!([A-Za-z0-9]+|#\d+|#x[0-9A-Fa-f]+);)/, '&amp;')
         }
 
-        // If there's an inner <Result> string, unescape and parse it then search for fdone
-        def innerXml = envelope.Body?.callResponse?.Result?.text() ?: envelope.'**'.find { it.name() == 'Result' }?.text()
+        def envelope = newSafeSlurper().parseText(trimmed)
+
+        def fdoneFound = envelope.'**'.find { it.name() == 'fdone' }?.text()?.trim() == '1'
+        def hasRecords = (envelope.data?.record?.size() ?: 0) > 0
+
+        def innerXml = envelope.Body?.callResponse?.Result?.text()
+                    ?: envelope.'**'.find { it.name() == 'Result' }?.text()
+
         if (innerXml) {
-            def innerUnescaped = unescapeXml(innerXml)
-            try {
-                def innerRoot = newSafeSlurper().parseText(innerUnescaped)
-                def innerFdone = innerRoot.'**'.find { it.name() == 'fdone' }
-                if (innerFdone && innerFdone.text()?.trim() == '1') {
-                    return validateFlast(innerRoot)
-                }
-            } catch (e) {
-                // ignore parsing errors of inner content
-            }
+            def innerRoot = newSafeSlurper().parseText(sanitizeXml(innerXml))
+            if (!fdoneFound) fdoneFound = innerRoot.'**'.find { it.name() == 'fdone' }?.text()?.trim() == '1'
+            if (!hasRecords) hasRecords = (innerRoot.data?.record?.size() ?: 0) > 0
         }
+
+        return fdoneFound && !hasRecords
+
     } catch (e) {
         return false
     }
-
-    return false
 }
 
 /**
@@ -572,7 +213,12 @@ def extractRecordsFromPayload(String payload) {
     // Prefer inner <Result> content when present (may contain escaped inner XML)
     def innerXml = envelope.Body?.callResponse?.Result?.text() ?: envelope.'**'.find { it.name() == 'Result' }?.text()
     if (innerXml) {
-        def innerUnescaped = unescapeXml(innerXml)
+        def sanitizeXml = { String s ->
+            if (s == null) return ''
+            return s.replaceAll(/&(?!([A-Za-z0-9]+|#\d+|#x[0-9A-Fa-f]+);)/, '&amp;')
+        }
+
+        def innerUnescaped = sanitizeXml(unescapeXml(innerXml))
         def innerRoot = newSafeSlurper().parseText(innerUnescaped)
         def gRecords = []
         try { gRecords = innerRoot.data.record } catch (e) { gRecords = [] }
@@ -1452,4 +1098,4 @@ def extractW3PCredentials() {
     } catch (Exception e) {
         return [status: -1, message: "Error extracting credentials: ${e.message}"]
     }
-}
+}  
