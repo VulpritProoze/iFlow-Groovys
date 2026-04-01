@@ -44,9 +44,6 @@ class Constants {
     // static final String BASE_URL_PROP_NAME = "[SL_BaseURL]"
 }
 
-/**
- * Agnostic Mapping Configuration.
- */
 def Message processData(Message message) {
     def logger = new LoggerService(messageLogFactory, message)
     try {
