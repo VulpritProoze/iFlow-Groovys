@@ -107,6 +107,14 @@ def Message processData(Message message) {
             }
 
             try {
+                def fKey = record?.AuthorizationCode ?: ''
+                def getRes = conn.get(new ODataRequestBody(url: "${Constants.ENTITY_ENDPOINT}?\$filter=AuthorizationCode%20eq%20'${fKey}'"))
+                if (getRes?.status != 1 || getRes?.payload.size() > 0) {
+                    logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_ERR", title: Constants.LOG_RECID, status: "ERROR", inputPayload: "fKey: ${fKey}", outputPayload: getRes?.message ?: "Unknown error"))
+                    return message
+                }
+                logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_STOCKTRANSFER_RESOLVE", title: Constants.LOG_RECID, status: "OK", inputPayload: "fKey: ${fKey}", outputPayload: "There is no stock transfer of such AuthorizationCode / FKey. Continuing query \n\nPayload: ${getRes?.payload ?: 'Successful query.'}" ))
+
                 def req = new ODataRequestBody()
                 req.url = Constants.ENTITY_ENDPOINT
                 req.payload = JsonOutput.toJson(record)
@@ -122,7 +130,7 @@ def Message processData(Message message) {
                     results << [index: i + 1, status: 'ERROR', message: res?.message]
                 }
             } catch (Exception e) {
-                errorItems << [index: i + 1, ItemCode: record?.ItemCode ?: '', message: e.message]
+                errorItems << [index: i + 1, firstField: firstKey, firstValue: firstValue, message: e.message]
                 results << [index: i + 1, status: 'ERROR', message: e.message]
             }
         }
