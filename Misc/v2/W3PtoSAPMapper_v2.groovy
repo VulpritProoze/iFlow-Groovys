@@ -36,7 +36,7 @@ class Constants {
     // For FDone checking
     static final String LAST_BATCHID_PROP_NAME = "[Project]_[Action]_flast_batchid"
 
-    // Logging Constant/s
+    // Logging Constants
     static final String LOG_RECID = "W3P"
 
     // Uncomment these constants if logging in to SAP
