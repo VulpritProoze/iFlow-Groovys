@@ -144,7 +144,7 @@ def Message processData(Message message) {
                 if (altUomText) {
                     def altRes = postUoMSAP(message, altUomText, odataConn)
                     if (altRes?.status == 1) {
-                        logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_UOM_RESOLVE", title: Constants.LOG_RECID, status: "OK", inputPayload: "Resolve AltUoM: ${altUomText}", outputPayload: "${altres.message} \n\n${altRes.payload}"))
+                        logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_UOM_RESOLVE", title: Constants.LOG_RECID, status: "OK", inputPayload: "Resolve AltUoM: ${altUomText}", outputPayload: "${altRes.message} \n\n${altRes.payload}"))
                     } else {
                         logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_UOM_RESOLVE", title: Constants.LOG_RECID, status: "ERROR", inputPayload: "Resolve AltUoM: ${altUomText}", outputPayload: altRes?.message ?: altRes))
                     }
