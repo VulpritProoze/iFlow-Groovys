@@ -31,6 +31,7 @@ class Constants {
     static final String STEP_NAME = "W3PtoSAP_MapProduct"
 
     // For FDone checking
+    static final String LAST_BATCHID_PROP_NAME = "[Project]_[Action]_flast_batchid"
 
     /**
      * QUICK NOTE: This mapping constant is not intended for customized mapping. This is only for simple
