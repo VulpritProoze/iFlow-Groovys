@@ -177,16 +177,19 @@ def isFdoneOne(String payload) {
 
     def sanitizeXml = { String s ->
         if (!s) return ''
+        // unescape common entities then escape any unknown named entities
         s.replaceAll('&lt;', '<')
          .replaceAll('&gt;', '>')
          .replaceAll('&quot;', '"')
          .replaceAll('&apos;', "'")
          .replaceAll('&amp;', '&')
-         .replaceAll(/&(?!([A-Za-z0-9]+|#\d+|#x[0-9A-Fa-f]+);)/, '&amp;')
+         .replaceAll(/&(?!lt;|gt;|quot;|apos;|amp;|#\d+;|#x[0-9A-Fa-f]+;)/, '&amp;')
     }
 
     try {
-        def envelope = newSafeSlurper().parseText(trimmed)
+        // escape unknown named entities (e.g. &ntilde;) before parsing
+        def safeTrimmed = trimmed.replaceAll(/&(?!lt;|gt;|quot;|apos;|amp;|#\d+;|#x[0-9A-Fa-f]+;)/, '&amp;')
+        def envelope = newSafeSlurper().parseText(safeTrimmed)
 
         def fdoneFound = envelope.'**'.find { it.name() == 'fdone' }?.text()?.trim() == '1'
 
@@ -257,14 +260,16 @@ def extractRecordsFromPayload(String payload) {
     }
 
     def sl = newSafeSlurper()
-    def envelope = sl.parseText(payload)
+    // escape unknown named entities before parsing the envelope
+    def safePayload = payload.replaceAll(/&(?!lt;|gt;|quot;|apos;|amp;|#\d+;|#x[0-9A-Fa-f]+;)/, '&amp;')
+    def envelope = sl.parseText(safePayload)
 
     // Prefer inner <Result> content when present (may contain escaped inner XML)
     def innerXml = envelope.Body?.callResponse?.Result?.text() ?: envelope.'**'.find { it.name() == 'Result' }?.text()
     if (innerXml) {
         def sanitizeXml = { String s ->
             if (s == null) return ''
-            return s.replaceAll(/&(?!([A-Za-z0-9]+|#\d+|#x[0-9A-Fa-f]+);)/, '&amp;')
+            return s.replaceAll(/&(?!lt;|gt;|quot;|apos;|amp;|#\d+;|#x[0-9A-Fa-f]+;)/, '&amp;')
         }
 
         def innerUnescaped = sanitizeXml(unescapeXml(innerXml))
