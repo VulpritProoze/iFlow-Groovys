@@ -1,5 +1,7 @@
 {
     "chat.tools.terminal.autoApprove": {
-        "git -C \"d:\\Ram": true
+        "git -C \"d:\\Ram": true,
+        "ForEach-Object": true,
+        "git -C $repo": true
     }
 }
