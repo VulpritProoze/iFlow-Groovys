@@ -14,9 +14,9 @@ argument-hint: "entity -> e.g. Account, Product, UoM; mappings -> mapping spec b
 
 **Process (step-by-step)**
 1. Create a new file named `W3PtoSAP_Map[Entity].groovy` under `WEBPOStoSAP/MAP`.
-2. Copy the boilerplate from [Misc/v2/W3PtoSAPMapper_v2.groovy](Misc/v2/W3PtoSAPMapper_v2.groovy) into the new file.
+2. Copy the boilerplate from [Misc/v2/W3PtoSAPMapper_v2.groovy](../../../Misc/v2/W3PtoSAPMapper_v2.groovy) into the new file.
 3. Implement the entity-specific mapping inside the `try { ... }` block within `processData(Message message)` — this is where the script assembles the output list and sets `message.body`.
-4. If you need SAP-side lookups, call the repo's OData helper (see [Misc/ODataConnection.groovy](Misc/ODataConnection.groovy)) and log results with a `${Constants.STEP_NAME}_[ENTITY]_RESOLVE` step before using responses.
+4. If you need SAP-side lookups, call the repo's OData helper (see [Misc/ODataConnection.groovy](../../../Misc/ODataConnection.groovy)) and log results with a `${Constants.STEP_NAME}_[ENTITY]_RESOLVE` step before using responses.
 5. Add any helper methods needed below `processData` in the "Add other methods here for customization" area. Do NOT modify the protected helper methods (the XML/record helpers) unless explicitly requested.
 6. Follow logging conventions (see Logging section) and return/output JSON as the script currently does.
 
