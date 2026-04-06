@@ -49,7 +49,7 @@ class Constants {
     static final String NEW_BATCHID_PROP_NAME = "ITGWEPOSSAPINTEGRATION3_GetStockTransfer_fnew_batchid"
     static final String LAST_BATCHID_PROP_NAME = "ITGWEPOSSAPINTEGRATION3_GetStockTransfer_flast_batchid"
     static final String LAST_KEY_PROP_NAME = "ITGWEPOSSAPINTEGRATION3_GetStockTransfer_flast_key"
-    static final String FDONE_PROP_NAME = "ITGWEPOSSAPINTEGRATION3_GetWarehouse_fdone"
+    static final String FDONE_PROP_NAME = "ITGWEPOSSAPINTEGRATION3_GetStockTransfer_fdone"
 }
 
 /**
