@@ -73,7 +73,8 @@ def Message processData(Message message) {
         for (def rec in records) {
             String cardCode = rec.fthirdpartyid.text() ?: ""
             String cardName = rec.fname.text() ?: ""
-            String frozen = rec.factive_flag.text() ?: ""
+            def factive = (rec.factive_flag.text() ?: '').trim()
+            String frozen = (factive == '1') ? 'tNO' : 'tYES'
             String notes = rec.fmemo.text() ?: ""
             String priceListNum = rec.fplevelid.text() ?: ""
             String updatedDate = rec.fupdated_date.text() ?: ""
@@ -94,10 +95,10 @@ def Message processData(Message message) {
 
         def jsonResult = JsonOutput.toJson(outList)
         message.setBody(jsonResult)
-        logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_OK", title: Constants.LOG_RECID, status: "OK", inputPayload: JsonOutput.prettyPrint(JsonOutput.toJson([records: records.size(), sample: (records.size()>0?records[0].toString():null)])), outputPayload: JsonOutput.prettyPrint(jsonResult)))
+        logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_OK", title: Constants.LOG_RECID, status: "OK", inputPayload: payload, outputPayload: JsonOutput.prettyPrint(jsonResult))) 
     } catch (Exception e) {
         message.setBody(JsonOutput.toJson([]))
-        logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_UNHANDLED_ERR", title: Constants.LOG_RECID, status: "ERROR", inputPayload: "Original Payload length: ${payload?.length() ?: 0}", outputPayload: "Exception: ${e.message}\nStacktrace: ${e.stackTrace.join('\n')}"))
+        logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_UNHANDLED_ERR", title: Constants.LOG_RECID, status: "ERROR", inputPayload: "Original Payload length: ${payload?.length() ?: 0}\nBody Payload: ${payload}", outputPayload: "Exception: ${e.message}\nStacktrace: ${e.stackTrace.join('\n')}"))
     }
     
     return message
@@ -123,7 +124,7 @@ def determineCardType(def rec, def logger) {
 
     // both or none: log a resolve warning but continue
     def info = [fcustomer: fcustomer, fsupplier: fsupplier]
-    logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_ACCOUNT_RESOLVE_WARN", title: Constants.LOG_RECID, status: "OK", inputPayload: JsonOutput.prettyPrint(JsonOutput.toJson(info)), outputPayload: "ambiguous or missing customer/supplier flags"))
+    logger.logBoth(new LogRequest(stepName: "${Constants.STEP_NAME}_WARN", title: Constants.LOG_RECID, status: "OK", inputPayload: JsonOutput.prettyPrint(JsonOutput.toJson(info)), outputPayload: "ambiguous or missing customer/supplier flags"))
     return ''
 }
 
@@ -156,66 +157,34 @@ def determineCardType(def rec, def logger) {
  * W3P indicates processing is finished.
  */
 def isFdoneOne(String payload) {
-    if (!payload) return false
+    if (!payload?.trim()) return false
 
-    def trimmed = payload.toString().trim()
-    if (!(trimmed.startsWith('<?xml') || trimmed.toLowerCase().startsWith('<soapenv:') || trimmed.toLowerCase().startsWith('<soap:'))) {
-        return false
-    }
-
-    def newSafeSlurper = {
+    def newSlurper = {
         def sp = new XmlSlurper()
-        try {
-            sp.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true)
-            sp.setFeature("http://xml.org/sax/features/external-general-entities", false)
-            sp.setFeature("http://xml.org/sax/features/external-parameter-entities", false)
-        } catch (e) {
-            // ignore if not supported
-        }
-        return sp
+        sp.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true)
+        sp.setFeature("http://xml.org/sax/features/external-general-entities", false)
+        sp.setFeature("http://xml.org/sax/features/external-parameter-entities", false)
+        sp
     }
 
-    def sanitizeXml = { String s ->
-        if (!s) return ''
-        // unescape common entities then escape any unknown named entities
-        s.replaceAll('&lt;', '<')
-         .replaceAll('&gt;', '>')
-         .replaceAll('&quot;', '"')
-         .replaceAll('&apos;', "'")
-         .replaceAll('&amp;', '&')
-         .replaceAll(/&(?!lt;|gt;|quot;|apos;|amp;|#\d+;|#x[0-9A-Fa-f]+;)/, '&amp;')
+    // Escape invalid named HTML entities (e.g. &ntilde;) before XML parsing
+    def escapeEntities = { String s ->
+        s.replaceAll(/&(?!lt;|gt;|quot;|apos;|amp;|#\d+;|#x[0-9A-Fa-f]+;)(\w+;)/, '&amp;$1')
     }
 
     try {
-        // escape unknown named entities (e.g. &ntilde;) before parsing
-        def safeTrimmed = trimmed.replaceAll(/&(?!lt;|gt;|quot;|apos;|amp;|#\d+;|#x[0-9A-Fa-f]+;)/, '&amp;')
-        def envelope = newSafeSlurper().parseText(safeTrimmed)
+        def envelope = newSlurper().parseText(escapeEntities(payload.trim()))
 
-        def fdoneFound = envelope.'**'.find { it.name() == 'fdone' }?.text()?.trim() == '1'
+        // Unwrap the HTML-entity-escaped inner XML from <Result>
+        def innerXmlRaw = envelope.'**'.find { it.name() == 'Result' }?.text()
+        if (!innerXmlRaw) return false
 
-        def hasRecords = false
-        try {
-            hasRecords = envelope.'**'.findAll { it.name() == 'record' }?.size() > 0
-        } catch (e) {
-            hasRecords = false
-        }
+        def innerRoot = newSlurper().parseText(escapeEntities(innerXmlRaw))
 
-        def innerXml = envelope.Body?.callResponse?.Result?.text()
-                    ?: envelope.'**'.find { it.name() == 'Result' }?.text()
+        def fdone   = innerRoot.data.fdone.text().trim()
+        def records = innerRoot.data.record.size()
 
-        if (innerXml) {
-            def innerRoot = newSafeSlurper().parseText(sanitizeXml(innerXml))
-            if (!fdoneFound) fdoneFound = innerRoot.'**'.find { it.name() == 'fdone' }?.text()?.trim() == '1'
-            if (!hasRecords) {
-                try {
-                    hasRecords = innerRoot.'**'.findAll { it.name() == 'record' }?.size() > 0
-                } catch (e) {
-                    hasRecords = false
-                }
-            }
-        }
-
-        return fdoneFound && !hasRecords
+        return fdone == '1' && records == 0   // adjust condition to your actual intent
 
     } catch (e) {
         return false
@@ -237,52 +206,58 @@ def extractRecordsFromPayload(String payload) {
             sp.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true)
             sp.setFeature("http://xml.org/sax/features/external-general-entities", false)
             sp.setFeature("http://xml.org/sax/features/external-parameter-entities", false)
-        } catch (e) {
-            // ignore if not supported
-        }
+        } catch (e) { /* ignore */ }
         return sp
     }
 
-    def unescapeXml = { String s ->
-        if (s == null) return ''
-        def x = s
-        x = x.replaceAll('&lt;', '<')
-        x = x.replaceAll('&gt;', '>')
-        x = x.replaceAll('&quot;', '"')
-        x = x.replaceAll('&apos;', "'")
-        x = x.replaceAll('&amp;', '&')
-        return x
+    // Single combined step: unescape standard XML entities, then immediately
+    // re-escape any named HTML entities that XML parsers don't know about.
+    // Order matters: do &amp; LAST when unescaping so it doesn't re-introduce entities.
+    def prepareXml = { String s ->
+        if (!s) return ''
+        // Step 1: unescape the 5 standard XML entities (amp LAST)
+        s = s.replace('&lt;',   '<')
+             .replace('&gt;',   '>')
+             .replace('&quot;', '"')
+             .replace('&apos;', "'")
+             .replace('&amp;',  '&')
+        // Step 2: escape any & that is NOT a valid XML entity reference
+        // This catches &ntilde; &mdash; &nbsp; etc.
+        s = s.replaceAll(/&(?![a-zA-Z][a-zA-Z0-9]*;|#\d+;|#x[0-9A-Fa-f]+;)/, '&amp;')
+        // Step 3: also escape the named entities that XML doesn't recognize
+        // (XML only allows &amp; &lt; &gt; &quot; &apos; and numeric refs)
+        s = s.replaceAll(/&(?!(amp|lt|gt|quot|apos);|#\d+;|#x[0-9A-Fa-f]+;)([a-zA-Z][a-zA-Z0-9]*;)/, '&amp;$2')
+        return s
     }
 
     def trimmed = payload.trim()
-    if (! (trimmed.startsWith('<?xml') || trimmed.toLowerCase().startsWith('<soapenv:') || trimmed.toLowerCase().startsWith('<soap:')) ) {
+    if (!(trimmed.startsWith('<?xml') ||
+          trimmed.toLowerCase().startsWith('<soapenv:') ||
+          trimmed.toLowerCase().startsWith('<soap:'))) {
         return null
     }
 
-    def sl = newSafeSlurper()
-    // escape unknown named entities before parsing the envelope
-    def safePayload = payload.replaceAll(/&(?!lt;|gt;|quot;|apos;|amp;|#\d+;|#x[0-9A-Fa-f]+;)/, '&amp;')
-    def envelope = sl.parseText(safePayload)
+    // Outer SOAP envelope — escape unknown entities before first parse
+    def safePayload = trimmed.replaceAll(
+        /&(?!(amp|lt|gt|quot|apos);|#\d+;|#x[0-9A-Fa-f]+;)([a-zA-Z][a-zA-Z0-9]*;)/,
+        '&amp;$2'
+    )
+    def envelope = newSafeSlurper().parseText(safePayload)
 
-    // Prefer inner <Result> content when present (may contain escaped inner XML)
-    def innerXml = envelope.Body?.callResponse?.Result?.text() ?: envelope.'**'.find { it.name() == 'Result' }?.text()
+    def innerXml = envelope.Body?.callResponse?.Result?.text()
+                ?: envelope.'**'.find { it.name() == 'Result' }?.text()
+
     if (innerXml) {
-        def sanitizeXml = { String s ->
-            if (s == null) return ''
-            return s.replaceAll(/&(?!lt;|gt;|quot;|apos;|amp;|#\d+;|#x[0-9A-Fa-f]+;)/, '&amp;')
-        }
-
-        def innerUnescaped = sanitizeXml(unescapeXml(innerXml))
+        // prepareXml handles both unescape + re-escape in one controlled pass
+        def innerUnescaped = prepareXml(innerXml)
         def innerRoot = newSafeSlurper().parseText(innerUnescaped)
         def gRecords = []
-        try { gRecords = innerRoot.data.record } catch (e) { gRecords = [] }
+        try { gRecords = innerRoot.data.record } catch (e) {}
         return gRecords.collect { it }
     }
 
-    // Fallback: try to read <data><record> directly from envelope
-    def rawRecords = []
-    try { rawRecords = envelope.data.record.collect { it } } catch (e) { rawRecords = [] }
-    return rawRecords
+    // Fallback: direct <data><record> in envelope
+    try { return envelope.data.record.collect { it } } catch (e) { return [] }
 }
 
 
